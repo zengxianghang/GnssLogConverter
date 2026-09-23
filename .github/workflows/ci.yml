@@ -25,3 +25,8 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Verify automatic MSVC build script
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: build_vs2022.bat
