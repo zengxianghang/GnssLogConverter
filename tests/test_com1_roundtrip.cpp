@@ -79,7 +79,8 @@ void TestNovAtelCom1FineRoundTrip()
                                                     sizeof(error)),
           "RANGEB COM1/FINE converts back to RANGEA");
     if (output != NULL) {
-        Check(std::strncmp(output, "#RANGEA,COM1,0,54.0,FINE,", 27U) == 0,
+        static const char expected_prefix[] = "#RANGEA,COM1,0,54.0,FINE,";
+        Check(std::strncmp(output, expected_prefix, std::strlen(expected_prefix)) == 0,
               "round trip restores COM1 and FINE labels exactly");
         Check(std::strstr(output, "#RANGEA,SPECIAL,") == NULL,
               "COM1 round trip never becomes SPECIAL");
