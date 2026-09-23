@@ -2,7 +2,7 @@
 
 namespace gnsslog {
 
-std::uint32_t CalculateUnicoreCrc32(const std::uint8_t* data, std::size_t size)
+std::uint32_t CalculateCrc32(const std::uint8_t* data, std::size_t size)
 {
     std::uint32_t crc = 0U;
     if (data == NULL && size != 0U) {
@@ -17,6 +17,16 @@ std::uint32_t CalculateUnicoreCrc32(const std::uint8_t* data, std::size_t size)
         }
     }
     return crc;
+}
+
+std::uint32_t CalculateUnicoreCrc32(const std::uint8_t* data, std::size_t size)
+{
+    return CalculateCrc32(data, size);
+}
+
+std::uint32_t CalculateNovAtelCrc32(const std::uint8_t* data, std::size_t size)
+{
+    return CalculateCrc32(data, size);
 }
 
 }  // namespace gnsslog

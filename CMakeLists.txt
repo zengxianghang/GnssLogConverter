@@ -8,6 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(gnsslog_core
     src/byte_io.cpp
     src/crc32.cpp
+    src/novatel/novatel_protocol.cpp
+    src/novatel/novatel_range.cpp
     src/unicore/unicore_protocol.cpp
     src/unicore/unicore_obsvm.cpp
 )

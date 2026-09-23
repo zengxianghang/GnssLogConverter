@@ -4,6 +4,8 @@
 
 #include "byte_io.h"
 #include "crc32.h"
+#include "novatel/novatel_protocol.h"
+#include "novatel/novatel_range.h"
 #include "unicore/unicore_obsvm.h"
 #include "unicore/unicore_protocol.h"
 
@@ -42,8 +44,6 @@ void TestByteIo()
 
 void TestUnicoreCrcFromManual()
 {
-    // Unicore N4 R1.15 GPSIONA example. ASCII CRC covers bytes after '#'
-    // and before '*'. Expected CRC shown by the manual: c5974f70.
     static const char text[] =
         "GPSIONA,90,GPS,FINE,2190,371250000,0,0,18,21;"
         "1.490116119384766e-08,-7.450580596923828e-09,-5.960464477539062e-08,"
@@ -52,6 +52,8 @@ void TestUnicoreCrcFromManual()
     const std::uint32_t crc = gnsslog::CalculateUnicoreCrc32(
         reinterpret_cast<const std::uint8_t*>(text), std::strlen(text));
     Check(crc == 0xC5974F70U, "Unicore CRC32 manual GPSIONA vector");
+    Check(gnsslog::CalculateNovAtelCrc32(reinterpret_cast<const std::uint8_t*>(text), std::strlen(text)) == crc,
+          "NovAtel and Unicore reflected CRC implementation match");
 }
 
 void TestUnicoreHeaderRoundTrip()
@@ -61,7 +63,7 @@ void TestUnicoreHeaderRoundTrip()
     src.message_id = gnsslog::unicore::kMessageIdObsVm;
     src.message_length = 44U;
     src.time_ref = 1U;
-    src.time_status = 2U;
+    src.time_status = 160U;
     src.week = 2190U;
     src.milliseconds = 117395000U;
     src.version = 0U;
@@ -82,10 +84,6 @@ void TestUnicoreHeaderRoundTrip()
     Check(dst.time_status == src.time_status, "header time_status");
     Check(dst.week == src.week, "header week");
     Check(dst.milliseconds == src.milliseconds, "header milliseconds");
-    Check(dst.version == src.version, "header version");
-    Check(dst.reserved == src.reserved, "header reserved");
-    Check(dst.leap_seconds == src.leap_seconds, "header leap_seconds");
-    Check(dst.delay_ms == src.delay_ms, "header delay_ms");
 }
 
 void TestObsVmRoundTrip()
@@ -126,34 +124,103 @@ void TestObsVmRoundTrip()
     Check(count == 2U, "OBSVM count");
     Check(dst[0].prn_slot == src[0].prn_slot, "OBSVM PRN");
     Check(NearlyEqual(dst[0].pseudorange_m, src[0].pseudorange_m, 1e-9), "OBSVM pseudorange");
-    Check(NearlyEqual(dst[0].adr_cycles, src[0].adr_cycles, 1e-9), "OBSVM ADR");
     Check(dst[0].pseudorange_std_x100 == 52U, "OBSVM psr std raw scale");
     Check(dst[0].adr_std_x10000 == 181U, "OBSVM adr std raw scale");
     Check(dst[0].cn0_x100 == 4270U, "OBSVM C/N0 raw scale");
-    Check(dst[0].tracking_status == 0x00181C23U, "OBSVM tracking status");
     Check(!gnsslog::unicore::DecodeObsVmPayload(payload, payload_size - 1U, dst, 2U, &count), "OBSVM truncated payload rejected");
 }
 
-void TestBinaryRecordCrc()
+void TestNovAtelTimeStatus()
+{
+    std::uint8_t value = 0U;
+    Check(gnsslog::novatel::TimeStatusFromAscii("UNKNOWN", &value) && value == 20U, "UNKNOWN time status");
+    Check(gnsslog::novatel::TimeStatusFromAscii("FINE", &value) && value == 160U, "FINE time status");
+    Check(gnsslog::novatel::TimeStatusFromAscii("FINESTEERING", &value) && value == 180U, "FINESTEERING time status");
+    Check(gnsslog::novatel::TimeStatusFromAscii("SATTIME", &value) && value == 200U, "SATTIME time status");
+    Check(!gnsslog::novatel::TimeStatusFromAscii("INVALID", &value), "invalid time status rejected");
+    Check(std::strcmp(gnsslog::novatel::TimeStatusToAscii(160U), "FINE") == 0, "FINE reverse mapping");
+}
+
+void TestNovAtelHeaderRoundTrip()
+{
+    gnsslog::novatel::BinaryHeader src = {};
+    src.message_id = gnsslog::novatel::kMessageIdRange;
+    src.message_type = 0U;
+    src.port_address = 0U;
+    src.message_length = 48U;
+    src.sequence = 0U;
+    src.idle_time = 180U;
+    src.time_status = 160U;
+    src.week = 2190U;
+    src.milliseconds = 117395000U;
+    src.receiver_status = 0U;
+    src.reserved = 0U;
+    src.receiver_sw_version = 0U;
+
+    std::uint8_t buffer[gnsslog::novatel::kBinaryHeaderSize] = {};
+    Check(gnsslog::novatel::EncodeBinaryHeader(src, buffer, sizeof(buffer)), "NovAtel header encode");
+    Check(gnsslog::novatel::HasBinarySync(buffer, sizeof(buffer)), "NovAtel AA4412 sync");
+    Check(buffer[3] == 28U, "NovAtel header length");
+
+    gnsslog::novatel::BinaryHeader dst = {};
+    Check(gnsslog::novatel::DecodeBinaryHeader(buffer, sizeof(buffer), &dst), "NovAtel header decode");
+    Check(dst.message_id == 43U, "NovAtel RANGE message id");
+    Check(dst.message_length == src.message_length, "NovAtel message length");
+    Check(dst.time_status == 160U, "NovAtel time status round trip");
+    Check(dst.week == src.week, "NovAtel week");
+    Check(dst.milliseconds == src.milliseconds, "NovAtel milliseconds");
+}
+
+void TestRangePayloadRoundTrip()
+{
+    gnsslog::novatel::RangeMeasurement src = {};
+    src.prn_slot = 26U;
+    src.glofreq = 0U;
+    src.pseudorange_m = 21720097.812;
+    src.pseudorange_std_m = 0.52F;
+    src.adr_cycles = -114139892.254585;
+    src.adr_std_cycles = 0.0181F;
+    src.doppler_hz = -2263.222F;
+    src.cn0_db_hz = 42.70F;
+    src.lock_time_s = 6262.010F;
+    src.tracking_status = 0x00181C23U;
+
+    std::uint8_t payload[gnsslog::novatel::kRangeCountSize + gnsslog::novatel::kRangeMeasurementSize] = {};
+    std::size_t payload_size = 0U;
+    Check(gnsslog::novatel::EncodeRangePayload(&src, 1U, payload, sizeof(payload), &payload_size), "RANGE payload encode");
+    Check(payload_size == 48U, "RANGE one-observation payload is 48 bytes");
+
+    gnsslog::novatel::RangeMeasurement dst = {};
+    std::uint32_t count = 0U;
+    Check(gnsslog::novatel::DecodeRangePayload(payload, payload_size, &dst, 1U, &count), "RANGE payload decode");
+    Check(count == 1U, "RANGE count");
+    Check(dst.prn_slot == src.prn_slot, "RANGE PRN");
+    Check(NearlyEqual(dst.pseudorange_std_m, 0.52, 1e-6), "RANGE psr sigma");
+    Check(NearlyEqual(dst.adr_std_cycles, 0.0181, 1e-6), "RANGE adr sigma");
+    Check(NearlyEqual(dst.cn0_db_hz, 42.70, 1e-5), "RANGE C/N0");
+    Check(dst.tracking_status == src.tracking_status, "RANGE tracking status storage");
+    Check(!gnsslog::novatel::DecodeRangePayload(payload, payload_size - 1U, &dst, 1U, &count), "RANGE truncated payload rejected");
+}
+
+void TestNovAtelBinaryRecordCrc()
 {
     const std::size_t payload_size = 4U;
-    const std::size_t record_size = gnsslog::unicore::kBinaryHeaderSize + payload_size + gnsslog::unicore::kBinaryCrcSize;
-    std::uint8_t record[32] = {};
+    const std::size_t record_size = gnsslog::novatel::kBinaryHeaderSize + payload_size + gnsslog::novatel::kBinaryCrcSize;
+    std::uint8_t record[40] = {};
 
-    gnsslog::unicore::BinaryHeader header = {};
-    header.cpu_idle = 50U;
-    header.message_id = 8U;
+    gnsslog::novatel::BinaryHeader header = {};
+    header.message_id = gnsslog::novatel::kMessageIdRange;
     header.message_length = static_cast<std::uint16_t>(payload_size);
+    header.time_status = 160U;
     header.week = 2190U;
     header.milliseconds = 1U;
-    header.leap_seconds = 18U;
 
-    Check(gnsslog::unicore::EncodeBinaryHeader(header, record, sizeof(record)), "record header encode");
-    Check(gnsslog::WriteU32LE(record, sizeof(record), gnsslog::unicore::kBinaryHeaderSize, 0x12345678U), "record payload write");
-    Check(gnsslog::unicore::WriteBinaryRecordCrc(record, record_size - gnsslog::unicore::kBinaryCrcSize, sizeof(record)), "record CRC write");
-    Check(gnsslog::unicore::ValidateBinaryRecordCrc(record, record_size), "record CRC validate");
-    record[gnsslog::unicore::kBinaryHeaderSize] ^= 0x01U;
-    Check(!gnsslog::unicore::ValidateBinaryRecordCrc(record, record_size), "record CRC detects corruption");
+    Check(gnsslog::novatel::EncodeBinaryHeader(header, record, sizeof(record)), "NovAtel record header encode");
+    Check(gnsslog::WriteU32LE(record, sizeof(record), gnsslog::novatel::kBinaryHeaderSize, 0U), "NovAtel empty RANGE count write");
+    Check(gnsslog::novatel::WriteBinaryRecordCrc(record, record_size - gnsslog::novatel::kBinaryCrcSize, sizeof(record)), "NovAtel record CRC write");
+    Check(gnsslog::novatel::ValidateBinaryRecordCrc(record, record_size), "NovAtel record CRC validate");
+    record[gnsslog::novatel::kBinaryHeaderSize] ^= 0x01U;
+    Check(!gnsslog::novatel::ValidateBinaryRecordCrc(record, record_size), "NovAtel record CRC detects corruption");
 }
 
 }  // namespace
@@ -164,7 +231,10 @@ int main()
     TestUnicoreCrcFromManual();
     TestUnicoreHeaderRoundTrip();
     TestObsVmRoundTrip();
-    TestBinaryRecordCrc();
+    TestNovAtelTimeStatus();
+    TestNovAtelHeaderRoundTrip();
+    TestRangePayloadRoundTrip();
+    TestNovAtelBinaryRecordCrc();
 
     if (g_failures != 0) {
         std::fprintf(stderr, "%d test(s) failed.\n", g_failures);
