@@ -1,113 +1,172 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 
-set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+pushd "%~dp0"
+
+set "VSWHERE="
 set "VS_PATH="
 set "VSDEVCMD="
-set "CMAKE_EXE="
-set "CTEST_EXE="
+set "VCVARS64="
+set "CL_PATH="
 
 rem -----------------------------------------------------------------------------
-rem Locate Visual Studio 2022 with the C++ toolchain.
-rem Prefer vswhere because it also works with non-default installation paths.
+rem First follow the same idea as LogMerger/scripts/build_msvc.bat:
+rem if cl.exe is already available, use it directly.
 rem -----------------------------------------------------------------------------
-if exist "%VSWHERE%" (
-    for /f "usebackq tokens=*" %%I in (`"%VSWHERE%" -latest -version "[17.0,18.0)" -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
-        if not defined VS_PATH set "VS_PATH=%%I"
-    )
+for /f "delims=" %%I in ('where cl.exe 2^>nul') do (
+    if not defined CL_PATH set "CL_PATH=%%I"
+)
+if defined CL_PATH goto :compiler_ready
+
+rem -----------------------------------------------------------------------------
+rem Try an already-defined Visual Studio installation first.
+rem -----------------------------------------------------------------------------
+if defined VSINSTALLDIR (
+    if exist "%VSINSTALLDIR%\Common7\Tools\VsDevCmd.bat" set "VSDEVCMD=%VSINSTALLDIR%\Common7\Tools\VsDevCmd.bat"
+    if exist "%VSINSTALLDIR%\VC\Auxiliary\Build\vcvars64.bat" set "VCVARS64=%VSINSTALLDIR%\VC\Auxiliary\Build\vcvars64.bat"
 )
 
-rem Fallback for machines where vswhere is unavailable.
-if not defined VS_PATH (
-    for %%E in (Community Professional Enterprise BuildTools) do (
-        if not defined VS_PATH if exist "%ProgramFiles%\Microsoft Visual Studio\2022\%%E\Common7\Tools\VsDevCmd.bat" (
-            set "VS_PATH=%ProgramFiles%\Microsoft Visual Studio\2022\%%E"
+rem -----------------------------------------------------------------------------
+rem Locate vswhere.exe from PATH or the standard Visual Studio Installer path.
+rem Do not restrict the query to a fixed VS install directory.
+rem -----------------------------------------------------------------------------
+if not defined VSDEVCMD if not defined VCVARS64 (
+    for /f "delims=" %%I in ('where vswhere.exe 2^>nul') do (
+        if not defined VSWHERE set "VSWHERE=%%I"
+    )
+
+    if not defined VSWHERE if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" (
+        set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+    )
+    if not defined VSWHERE if exist "%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe" (
+        set "VSWHERE=%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe"
+    )
+
+    if defined VSWHERE (
+        for /f "usebackq tokens=*" %%I in (`"!VSWHERE!" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do (
+            if not defined VS_PATH set "VS_PATH=%%I"
+        )
+        if defined VS_PATH (
+            if exist "!VS_PATH!\Common7\Tools\VsDevCmd.bat" set "VSDEVCMD=!VS_PATH!\Common7\Tools\VsDevCmd.bat"
+            if exist "!VS_PATH!\VC\Auxiliary\Build\vcvars64.bat" set "VCVARS64=!VS_PATH!\VC\Auxiliary\Build\vcvars64.bat"
         )
     )
 )
 
-if not defined VS_PATH (
-    echo [ERROR] Visual Studio 2022 with C++ build tools was not found.
-    echo         Install the "Desktop development with C++" workload.
-    exit /b 1
-)
-
-set "VSDEVCMD=%VS_PATH%\Common7\Tools\VsDevCmd.bat"
-if not exist "%VSDEVCMD%" (
-    echo [ERROR] VsDevCmd.bat was not found under:
-    echo         %VS_PATH%
-    exit /b 1
-)
-
-echo [INFO] Visual Studio found:
-echo        %VS_PATH%
-
-echo [INFO] Initializing x64 MSVC environment...
-call "%VSDEVCMD%" -arch=x64 -host_arch=x64
-if errorlevel 1 (
-    echo [ERROR] Failed to initialize the Visual Studio build environment.
-    exit /b 1
-)
-
 rem -----------------------------------------------------------------------------
-rem Locate CMake. Prefer a PATH installation, otherwise use Visual Studio's
-rem bundled CMake when available.
+rem Explicit fallback locations. This covers standard installs and machines where
+rem Visual Studio is installed under a custom system_app directory, e.g.
+rem E:\system_app\visual_studio_2022.
 rem -----------------------------------------------------------------------------
-for /f "delims=" %%I in ('where cmake.exe 2^>nul') do (
-    if not defined CMAKE_EXE set "CMAKE_EXE=%%I"
-)
+if not defined VSDEVCMD if not defined VCVARS64 (
+    for %%D in (C D E F G H) do (
+        if not defined VSDEVCMD if exist "%%D:\system_app\visual_studio_2022\Common7\Tools\VsDevCmd.bat" set "VSDEVCMD=%%D:\system_app\visual_studio_2022\Common7\Tools\VsDevCmd.bat"
+        if not defined VCVARS64 if exist "%%D:\system_app\visual_studio_2022\VC\Auxiliary\Build\vcvars64.bat" set "VCVARS64=%%D:\system_app\visual_studio_2022\VC\Auxiliary\Build\vcvars64.bat"
 
-if not defined CMAKE_EXE if exist "%VS_PATH%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" (
-    set "CMAKE_EXE=%VS_PATH%\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
-)
-
-if not defined CMAKE_EXE (
-    echo [ERROR] CMake was not found in PATH or in the Visual Studio installation.
-    echo         Add the Visual Studio CMake component or install CMake.
-    exit /b 1
-)
-
-for %%I in ("%CMAKE_EXE%") do set "CTEST_EXE=%%~dpIctest.exe"
-if not exist "%CTEST_EXE%" (
-    for /f "delims=" %%I in ('where ctest.exe 2^>nul') do (
-        if not exist "%CTEST_EXE%" set "CTEST_EXE=%%I"
+        if not defined VSDEVCMD if exist "%%D:\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" set "VSDEVCMD=%%D:\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat"
+        if not defined VSDEVCMD if exist "%%D:\Microsoft Visual Studio\2022\Professional\Common7\Tools\VsDevCmd.bat" set "VSDEVCMD=%%D:\Microsoft Visual Studio\2022\Professional\Common7\Tools\VsDevCmd.bat"
+        if not defined VSDEVCMD if exist "%%D:\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" set "VSDEVCMD=%%D:\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat"
+        if not defined VSDEVCMD if exist "%%D:\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat" set "VSDEVCMD=%%D:\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat"
     )
 )
 
-if not exist "%CTEST_EXE%" (
-    echo [ERROR] ctest.exe was not found next to CMake or in PATH.
+rem Standard Program Files fallbacks, including VS 2019 in case the installed
+rem MSVC toolchain is older but still supports this C++11 project.
+if not defined VSDEVCMD if not defined VCVARS64 (
+    for %%V in (2022 2019) do (
+        for %%E in (Community Professional Enterprise BuildTools) do (
+            if not defined VSDEVCMD if exist "%ProgramFiles%\Microsoft Visual Studio\%%V\%%E\Common7\Tools\VsDevCmd.bat" set "VSDEVCMD=%ProgramFiles%\Microsoft Visual Studio\%%V\%%E\Common7\Tools\VsDevCmd.bat"
+            if not defined VCVARS64 if exist "%ProgramFiles%\Microsoft Visual Studio\%%V\%%E\VC\Auxiliary\Build\vcvars64.bat" set "VCVARS64=%ProgramFiles%\Microsoft Visual Studio\%%V\%%E\VC\Auxiliary\Build\vcvars64.bat"
+            if not defined VSDEVCMD if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\%%V\%%E\Common7\Tools\VsDevCmd.bat" set "VSDEVCMD=%ProgramFiles(x86)%\Microsoft Visual Studio\%%V\%%E\Common7\Tools\VsDevCmd.bat"
+            if not defined VCVARS64 if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\%%V\%%E\VC\Auxiliary\Build\vcvars64.bat" set "VCVARS64=%ProgramFiles(x86)%\Microsoft Visual Studio\%%V\%%E\VC\Auxiliary\Build\vcvars64.bat"
+        )
+    )
+)
+
+if defined VSDEVCMD (
+    echo [INFO] Initializing MSVC with:
+    echo        !VSDEVCMD!
+    call "!VSDEVCMD!" -arch=x64 -host_arch=x64
+    if errorlevel 1 goto :vs_init_failed
+) else if defined VCVARS64 (
+    echo [INFO] Initializing MSVC with:
+    echo        !VCVARS64!
+    call "!VCVARS64!"
+    if errorlevel 1 goto :vs_init_failed
+) else (
+    echo [ERROR] Visual Studio C++ build environment was not found.
+    echo.
+    echo Checked:
+    echo   - cl.exe already in PATH
+    echo   - VSINSTALLDIR
+    echo   - vswhere.exe
+    echo   - standard Visual Studio 2022/2019 locations
+    echo   - C: through H:\system_app\visual_studio_2022
+    echo.
+    echo If Visual Studio is installed elsewhere, run this once from an
+    echo "x64 Native Tools Command Prompt for VS" or edit the custom path list.
+    popd
     exit /b 1
 )
 
-echo [INFO] CMake:
-echo        %CMAKE_EXE%
+for /f "delims=" %%I in ('where cl.exe 2^>nul') do (
+    if not defined CL_PATH set "CL_PATH=%%I"
+)
+if not defined CL_PATH (
+    echo [ERROR] Visual Studio environment loaded, but cl.exe is still unavailable.
+    popd
+    exit /b 1
+)
+
+:compiler_ready
+echo [INFO] MSVC compiler:
+echo        %CL_PATH%
 
 rem -----------------------------------------------------------------------------
-rem Configure, build and test.
+rem Compile directly with cl.exe, matching the proven LogMerger build approach.
+rem This intentionally does not depend on CMake.
 rem -----------------------------------------------------------------------------
 if exist build rmdir /s /q build
+mkdir build\Release >nul 2>nul
+mkdir build\obj_app >nul 2>nul
+mkdir build\obj_test >nul 2>nul
 
-"%CMAKE_EXE%" -S . -B build -G "Visual Studio 17 2022" -A x64
-if errorlevel 1 (
-    echo [ERROR] CMake configure failed.
-    exit /b 1
-)
+set "CORE_SOURCES=src\byte_io.cpp src\crc32.cpp src\range_converter.cpp src\novatel\novatel_protocol.cpp src\novatel\novatel_range.cpp src\unicore\unicore_protocol.cpp src\unicore\unicore_obsvm.cpp"
+set "COMMON_FLAGS=/nologo /EHsc /O2 /std:c++14 /W4 /permissive- /I src"
 
-"%CMAKE_EXE%" --build build --config Release --parallel
-if errorlevel 1 (
-    echo [ERROR] Build failed.
-    exit /b 1
-)
+echo [INFO] Building GnssLogConverter.exe ...
+cl %COMMON_FLAGS% /Fo"build\obj_app\\" /Fe"build\Release\GnssLogConverter.exe" src\main.cpp %CORE_SOURCES%
+if errorlevel 1 goto :build_failed
 
-"%CTEST_EXE%" --test-dir build -C Release --output-on-failure
-if errorlevel 1 (
-    echo [ERROR] Tests failed.
-    exit /b 1
-)
+echo [INFO] Building gnsslog_tests.exe ...
+cl %COMMON_FLAGS% /Fo"build\obj_test\\" /Fe"build\Release\gnsslog_tests.exe" tests\test_core.cpp %CORE_SOURCES%
+if errorlevel 1 goto :build_failed
+
+echo [INFO] Running tests ...
+"build\Release\gnsslog_tests.exe"
+if errorlevel 1 goto :test_failed
 
 echo.
 echo [SUCCESS] Build and tests completed successfully.
 echo [SUCCESS] EXE: %CD%\build\Release\GnssLogConverter.exe
-
+popd
 endlocal
 exit /b 0
+
+:vs_init_failed
+echo [ERROR] Failed to initialize the Visual Studio x64 build environment.
+popd
+endlocal
+exit /b 1
+
+:build_failed
+echo [ERROR] MSVC compilation failed.
+popd
+endlocal
+exit /b 1
+
+:test_failed
+echo [ERROR] Tests failed.
+popd
+endlocal
+exit /b 1
