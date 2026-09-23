@@ -36,3 +36,7 @@ enable_testing()
 add_executable(gnsslog_tests tests/test_core.cpp)
 target_link_libraries(gnsslog_tests PRIVATE gnsslog_core)
 add_test(NAME gnsslog_tests COMMAND gnsslog_tests)
+
+add_executable(gnsslog_com1_roundtrip_test tests/test_com1_roundtrip.cpp)
+target_link_libraries(gnsslog_com1_roundtrip_test PRIVATE gnsslog_core)
+add_test(NAME gnsslog_com1_roundtrip_test COMMAND gnsslog_com1_roundtrip_test)
