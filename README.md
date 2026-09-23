@@ -16,9 +16,23 @@ Binary -> ASCII
 
 The converter preserves record order and protocol-native message framing. Target-format CRC values are always regenerated rather than copied from the source record.
 
-## Status
+## Current status
 
-Repository bootstrap in progress. The first implementation milestone is the common byte/CRC layer plus Unicore N4 header and `OBSVM` round-trip conversion, followed by EPH/ION records and NovAtel OEM7 support.
+Implemented in the bootstrap milestone:
+
+- Bounds-checked little-endian primitive readers/writers.
+- Unicore N4 CRC32 implementation validated against the R1.15 `GPSIONA` example.
+- Unicore N4 24-byte binary header encode/decode.
+- Unicore binary record CRC write/validation.
+- Unicore `OBSVM` binary payload encode/decode (4-byte count + 40 bytes per observation).
+- CMake build, Visual Studio 2022 build script, unit tests, and CI workflow.
+
+Not yet enabled:
+
+- End-to-end file conversion.
+- Unicore ASCII header conversion (the R1.15 section reviewed does not document numeric binary values for `TimeRef` / `TimeStatus`; these values will not be guessed).
+- Remaining Unicore EPH/ION codecs.
+- NovAtel OEM7 codecs.
 
 ## Design principles
 
@@ -28,6 +42,22 @@ Repository bootstrap in progress. The first implementation milestone is the comm
 - Strict bounds checks for all binary reads and variable-length records.
 - Round-trip tests (`ASCII -> Binary -> ASCII` and `Binary -> ASCII -> Binary`) for each supported message.
 - Windows / Visual Studio friendly build, with CMake for portability.
+
+## Build
+
+### CMake
+
+```powershell
+cmake -S . -B build
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+```
+
+### Visual Studio 2022
+
+```powershell
+build_vs2022.bat
+```
 
 ## Planned CLI
 
@@ -42,12 +72,14 @@ GnssLogConverter.exe input.log output.bin --vendor novatel
 GnssLogConverter.exe input.log output.bin --vendor unicore
 ```
 
-When the direction is not specified, the tool will infer it from the input framing and/or filename extension when unambiguous.
+When the direction is not specified, the final tool will infer it from the input framing and/or filename extension when unambiguous.
 
 ## Unicore N4 reference
 
-The Unicore implementation is based on *Unicore Reference Commands Manual For N4 High Precision Products V2 CH R1.15* (2026-06). In particular, N4 binary records use the `AA 44 B5` synchronization bytes and a 24-byte binary header, followed by the message body and a 32-bit CRC.
+The Unicore implementation is based on *Unicore Reference Commands Manual For N4 High Precision Products V2 CH R1.15* (2026-06). N4 binary records use the `AA 44 B5` synchronization bytes and a 24-byte binary header, followed by the message body and a 32-bit CRC.
+
+See `docs/protocol_notes.md` for implementation-specific notes and unresolved protocol mappings.
 
 ## License
 
-MIT (to be added during repository bootstrap).
+MIT.
