@@ -29,14 +29,10 @@ Implemented in the bootstrap milestone:
 - NovAtel OEM7 28-byte binary header codec.
 - NovAtel `TimeStatus` mapping.
 - NovAtel RANGE binary payload codec.
-- CMake build, Visual Studio 2022 build script, unit tests, and CI workflow.
+- File-level `RANGEA -> RANGEB`, `OBSVMA -> RANGEB`, and `RANGEB -> RANGEA` conversion.
+- CMake build, Visual Studio 2022 auto-detection build script, unit tests, and CI workflow.
 
-Next implementation steps:
-
-- Unicore ASCII header parser.
-- Direct `OBSVMA -> RANGEB` field conversion.
-- Native `RANGEA <-> RANGEB` conversion.
-- EPH/ION mappings.
+Remaining implementation work includes the requested EPH/ION mappings and broader mixed-message support.
 
 ## Design principles
 
@@ -70,7 +66,29 @@ The target standard NovAtel OEM7 binary header does not contain a separate `Time
 
 ## Build
 
-### CMake
+### Automatic Visual Studio 2022 build on Windows
+
+Run from a normal Command Prompt or PowerShell; a Visual Studio Developer Prompt is not required:
+
+```powershell
+build_vs2022.bat
+```
+
+The script automatically:
+
+1. Locates Visual Studio 2022 with `vswhere.exe`, including non-default installation paths.
+2. Falls back to the standard Community / Professional / Enterprise / BuildTools locations when needed.
+3. Loads the x64 MSVC environment through `VsDevCmd.bat`.
+4. Locates CMake from `PATH` or the CMake bundled with Visual Studio.
+5. Configures a clean x64 Release build, compiles the project, and runs CTest.
+
+On success the executable is generated at:
+
+```text
+build\Release\GnssLogConverter.exe
+```
+
+### CMake manually
 
 ```powershell
 cmake -S . -B build
@@ -78,26 +96,16 @@ cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-### Visual Studio 2022
+## CLI
 
 ```powershell
-build_vs2022.bat
-```
-
-## Planned CLI
-
-```powershell
-GnssLogConverter.exe input.log output.bin
-GnssLogConverter.exe input.bin output.log
+GnssLogConverter.exe input_rangea.log output.bin
+GnssLogConverter.exe input_obsvma.log output.bin
+GnssLogConverter.exe input.bin output_rangea.log
 
 GnssLogConverter.exe input.log output.bin --to binary
 GnssLogConverter.exe input.bin output.log --to ascii
-
-GnssLogConverter.exe input.log output.bin --vendor novatel
-GnssLogConverter.exe input.log output.bin --vendor unicore
 ```
-
-When the direction is not specified, the final tool will infer it from the input framing and/or filename extension when unambiguous.
 
 ## References
 
