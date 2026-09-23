@@ -45,7 +45,7 @@ Next implementation steps:
 - One canonical in-memory representation between input parsing and target encoding.
 - Strict bounds checks for all binary reads and variable-length records.
 - Explicit cross-vendor field mapping for units and field types.
-- Exception: the 32-bit RANGE/OBSVM channel tracking status (`ch-tr-status`) is copied unchanged, bit-for-bit, for both `RANGEA -> RANGEB` and `OBSVMA -> RANGEB`.
+- Project-specific exception: the 32-bit RANGE/OBSVM channel tracking status (`ch-tr-status`) is copied unchanged, bit-for-bit, for both `RANGEA -> RANGEB` and `OBSVMA -> RANGEB`, even if the two vendors document bit meanings differently.
 - Windows / Visual Studio friendly build, with CMake for portability.
 
 ## OBSVMA -> RANGEB
