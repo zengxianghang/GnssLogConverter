@@ -127,6 +127,7 @@ Requirements:
 - Write exactly the same 32-bit bit pattern into the target RANGE observation record.
 - Do not modify system bits, signal-type bits, validity bits, reserved bits, channel number, or any other bit.
 - Do not reconstruct the target word field-by-field.
+- This is a project requirement even if vendor documentation describes individual bit meanings differently.
 - Add tests using representative values such as `00181c23`, `00191c23`, and values with high bits set to prove bit-for-bit preservation.
 
 ## CRC
