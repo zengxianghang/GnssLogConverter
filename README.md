@@ -26,13 +26,14 @@ Implemented in the bootstrap milestone:
 - Unicore N4 CRC32 implementation validated against the R1.15 `GPSIONA` example.
 - Unicore N4 documented header/payload utilities used to validate source layout assumptions.
 - Unicore `OBSVM` field model and 40-byte native payload helper.
+- NovAtel OEM7 28-byte binary header codec.
+- NovAtel `TimeStatus` mapping.
+- NovAtel RANGE binary payload codec.
 - CMake build, Visual Studio 2022 build script, unit tests, and CI workflow.
 
 Next implementation steps:
 
-- NovAtel OEM7 28-byte binary header and CRC writer/reader.
 - Unicore ASCII header parser.
-- NovAtel time-status mapping.
 - Direct `OBSVMA -> RANGEB` field conversion.
 - Native `RANGEA <-> RANGEB` conversion.
 - EPH/ION mappings.
@@ -43,7 +44,8 @@ Next implementation steps:
 - Explicit little-endian field reads/writes; do not serialize C/C++ structs directly.
 - One canonical in-memory representation between input parsing and target encoding.
 - Strict bounds checks for all binary reads and variable-length records.
-- Explicit cross-vendor field mapping; do not assume equal field types, scaling, status bits, or signal identifiers without verification.
+- Explicit cross-vendor field mapping for units and field types.
+- Exception: the 32-bit RANGE/OBSVM channel tracking status (`ch-tr-status`) is copied unchanged, bit-for-bit, for both `RANGEA -> RANGEB` and `OBSVMA -> RANGEB`.
 - Windows / Visual Studio friendly build, with CMake for portability.
 
 ## OBSVMA -> RANGEB
@@ -56,7 +58,9 @@ adr std x10000  -> adr sigma (cycles) / 10000.0
 C/N0 x100       -> C/N0 (dB-Hz)       / 100.0
 ```
 
-The source Unicore tracking-status word must be translated deliberately into the NovAtel RANGE tracking-status definition. Signal type mappings must be verified per GNSS system.
+The source 32-bit Unicore `ch-tr-status` value is written directly to the NovAtel RANGE tracking-status field without changing any bit, system value, signal-type value, validity flag, or reserved bit.
+
+The same rule applies to native `RANGEA -> RANGEB`: parse the ASCII hexadecimal tracking-status field and write the exact 32-bit value into the binary RANGE observation record.
 
 ## Header handling
 
