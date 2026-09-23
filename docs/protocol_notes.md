@@ -107,11 +107,27 @@ Doppler     -> Doppler
 lock time   -> lock time
 ```
 
-PRN/frequency and tracking-status conversion require protocol-aware translation:
+PRN/frequency handling:
 
-- For GLONASS, convert the Unicore system-frequency field into NovAtel `glofreq` (`frequency channel + 7`) as defined by the target RANGE format.
-- For non-GLONASS signals, `glofreq` is normally zero except target-specific cases such as QZSS L1C/B.
-- Do not blindly copy the Unicore 32-bit tracking-status word. Several bit positions have similar meanings, but signal-type values and some status bits differ between the documented Unicore and current NovAtel definitions. Build the target status word field-by-field.
+- For GLONASS, convert the Unicore system-frequency field into NovAtel `glofreq` (`frequency channel + 7`) as required by the RANGE record.
+- For non-GLONASS signals, set `glofreq` according to the target RANGE field definition.
+
+### Tracking-status passthrough rule
+
+For this project, the 32-bit channel tracking status is **not translated or normalized**.
+
+```text
+RANGEA ch-tr-status  -> RANGEB tracking status: exact uint32 copy
+OBSVMA ch-tr-status  -> RANGEB tracking status: exact uint32 copy
+```
+
+Requirements:
+
+- Parse the ASCII hexadecimal value as an unsigned 32-bit integer.
+- Write exactly the same 32-bit bit pattern into the target RANGE observation record.
+- Do not modify system bits, signal-type bits, validity bits, reserved bits, channel number, or any other bit.
+- Do not reconstruct the target word field-by-field.
+- Add tests using representative values such as `00181c23`, `00191c23`, and values with high bits set to prove bit-for-bit preservation.
 
 ## CRC
 
