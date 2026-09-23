@@ -30,7 +30,7 @@ Implemented in the bootstrap milestone:
 - NovAtel `TimeStatus` mapping.
 - NovAtel RANGE binary payload codec.
 - File-level `RANGEA -> RANGEB`, `OBSVMA -> RANGEB`, and `RANGEB -> RANGEA` conversion.
-- CMake build, Visual Studio 2022 auto-detection build script, unit tests, and CI workflow.
+- CMake build, automatic MSVC build script, unit tests, and CI workflow.
 
 Remaining implementation work includes the requested EPH/ION mappings and broader mixed-message support.
 
@@ -66,21 +66,27 @@ The target standard NovAtel OEM7 binary header does not contain a separate `Time
 
 ## Build
 
-### Automatic Visual Studio 2022 build on Windows
+### Automatic Visual Studio/MSVC build on Windows
 
-Run from a normal Command Prompt or PowerShell; a Visual Studio Developer Prompt is not required:
+Run from a normal Command Prompt or PowerShell:
 
 ```powershell
 build_vs2022.bat
 ```
 
-The script automatically:
+The build script now follows the proven `LogMerger/scripts/build_msvc.bat` approach: once the Visual Studio environment is available it compiles directly with `cl.exe`, without requiring CMake. The script additionally initializes that environment automatically when possible.
 
-1. Locates Visual Studio 2022 with `vswhere.exe`, including non-default installation paths.
-2. Falls back to the standard Community / Professional / Enterprise / BuildTools locations when needed.
-3. Loads the x64 MSVC environment through `VsDevCmd.bat`.
-4. Locates CMake from `PATH` or the CMake bundled with Visual Studio.
-5. Configures a clean x64 Release build, compiles the project, and runs CTest.
+Detection order:
+
+1. Use `cl.exe` immediately if it is already in `PATH`.
+2. Use an existing `VSINSTALLDIR` if present.
+3. Locate Visual Studio through `vswhere.exe`.
+4. Check standard Visual Studio 2022/2019 Community, Professional, Enterprise, and BuildTools locations.
+5. Check custom `C:` through `H:` locations named `system_app\visual_studio_2022`, including paths such as `E:\system_app\visual_studio_2022`.
+6. Initialize x64 MSVC using either `VsDevCmd.bat` or `VC\Auxiliary\Build\vcvars64.bat`.
+7. Compile the application and tests directly with `cl.exe`, then run the tests.
+
+No standalone CMake installation is required for this batch file.
 
 On success the executable is generated at:
 
@@ -111,6 +117,7 @@ GnssLogConverter.exe input.bin output.log --to ascii
 
 - Unicore input layouts: *Unicore Reference Commands Manual For N4 High Precision Products V2 CH R1.15* (2026-06).
 - NovAtel target layouts: OEM7 Commands and Logs documentation.
+- Windows direct MSVC build pattern: `zengxianghang/LogMerger/scripts/build_msvc.bat`.
 
 See `docs/protocol_notes.md` for implementation-specific notes.
 
