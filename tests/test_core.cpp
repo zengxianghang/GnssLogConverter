@@ -6,6 +6,7 @@
 #include "crc32.h"
 #include "novatel/novatel_protocol.h"
 #include "novatel/novatel_range.h"
+#include "range_converter.h"
 #include "unicore/unicore_obsvm.h"
 #include "unicore/unicore_protocol.h"
 
@@ -223,6 +224,96 @@ void TestNovAtelBinaryRecordCrc()
     Check(!gnsslog::novatel::ValidateBinaryRecordCrc(record, record_size), "NovAtel record CRC detects corruption");
 }
 
+void TestObsVmAToRangeB()
+{
+    static const char line[] =
+        "#OBSVMA,94,GPS,FINE,2190,117395000,0,0,18,17;"
+        "1,0,26,21720097.812,-114139892.254585,52,181,-2263.222,4270,0,6262.010,00181c23*00000000";
+
+    std::uint8_t* record = NULL;
+    std::size_t record_size = 0U;
+    char error[256] = {};
+    Check(gnsslog::ConvertRangeAsciiLineToBinary(line, &record, &record_size, error, sizeof(error)),
+          "OBSVMA direct conversion");
+    if (record == NULL) {
+        return;
+    }
+
+    gnsslog::novatel::BinaryHeader header = {};
+    Check(gnsslog::novatel::DecodeBinaryHeader(record, record_size, &header), "OBSVMA target header decode");
+    Check(header.message_id == 43U, "OBSVMA target is RANGE message ID 43");
+    Check(header.port_address == 0xC0U, "OBSVMA target uses THISPORT");
+    Check(header.idle_time == 188U, "OBSVMA CPU idle converted from percent to NovAtel x2 encoding");
+    Check(header.time_status == 160U, "OBSVMA FINE uses NovAtel time status 160");
+    Check(header.week == 2190U && header.milliseconds == 117395000U, "OBSVMA time copied to target header");
+    Check(gnsslog::novatel::ValidateBinaryRecordCrc(record, record_size), "OBSVMA target CRC valid");
+
+    gnsslog::novatel::RangeMeasurement obs = {};
+    std::uint32_t count = 0U;
+    Check(gnsslog::novatel::DecodeRangePayload(record + gnsslog::novatel::kBinaryHeaderSize,
+                                               header.message_length,
+                                               &obs,
+                                               1U,
+                                               &count),
+          "OBSVMA target RANGE payload decode");
+    Check(count == 1U, "OBSVMA target observation count");
+    Check(obs.prn_slot == 26U && obs.glofreq == 0U, "OBSVMA PRN/system-freq copied");
+    Check(NearlyEqual(obs.pseudorange_std_m, 0.52, 1e-6), "OBSVMA psr std scaling");
+    Check(NearlyEqual(obs.adr_std_cycles, 0.0181, 1e-6), "OBSVMA adr std scaling");
+    Check(NearlyEqual(obs.cn0_db_hz, 42.70, 1e-5), "OBSVMA C/N0 scaling");
+    Check(obs.tracking_status == 0x00181C23U, "OBSVMA ch-tr-status preserved bit-for-bit");
+
+    char* ascii = NULL;
+    std::size_t ascii_size = 0U;
+    Check(gnsslog::ConvertRangeBinaryRecordToAscii(record,
+                                                    record_size,
+                                                    &ascii,
+                                                    &ascii_size,
+                                                    error,
+                                                    sizeof(error)),
+          "generated RANGEB converts back to RANGEA");
+    if (ascii != NULL) {
+        Check(std::strstr(ascii, "00181c23") != NULL, "binary-to-ASCII preserves tracking status hex");
+        gnsslog::FreeConvertedBuffer(ascii);
+    }
+    gnsslog::FreeConvertedBuffer(record);
+}
+
+void TestRangeAToRangeB()
+{
+    static const char line[] =
+        "#RANGEA,USB1,0,54.0,FINESTEERING,2209,512449.000,02000020,5103,16809;"
+        "1,26,0,24101771.233,0.199,-126655684.482618,0.012,2806.247,44.4,853.017,1810dc04*00000000";
+
+    std::uint8_t* record = NULL;
+    std::size_t record_size = 0U;
+    char error[256] = {};
+    Check(gnsslog::ConvertRangeAsciiLineToBinary(line, &record, &record_size, error, sizeof(error)),
+          "RANGEA direct conversion");
+    if (record == NULL) {
+        return;
+    }
+
+    gnsslog::novatel::BinaryHeader header = {};
+    Check(gnsslog::novatel::DecodeBinaryHeader(record, record_size, &header), "RANGEA target header decode");
+    Check(header.idle_time == 108U, "RANGEA idle percent converted to binary encoding");
+    Check(header.time_status == 180U, "RANGEA FINESTEERING mapping");
+    Check(header.week == 2209U && header.milliseconds == 512449000U, "RANGEA time conversion");
+
+    gnsslog::novatel::RangeMeasurement obs = {};
+    std::uint32_t count = 0U;
+    Check(gnsslog::novatel::DecodeRangePayload(record + gnsslog::novatel::kBinaryHeaderSize,
+                                               header.message_length,
+                                               &obs,
+                                               1U,
+                                               &count),
+          "RANGEA target RANGE payload decode");
+    Check(count == 1U, "RANGEA observation count");
+    Check(obs.tracking_status == 0x1810DC04U, "RANGEA ch-tr-status preserved bit-for-bit");
+    Check(NearlyEqual(obs.pseudorange_m, 24101771.233, 1e-9), "RANGEA pseudorange copied");
+    gnsslog::FreeConvertedBuffer(record);
+}
+
 }  // namespace
 
 int main()
@@ -235,6 +326,8 @@ int main()
     TestNovAtelHeaderRoundTrip();
     TestRangePayloadRoundTrip();
     TestNovAtelBinaryRecordCrc();
+    TestObsVmAToRangeB();
+    TestRangeAToRangeB();
 
     if (g_failures != 0) {
         std::fprintf(stderr, "%d test(s) failed.\n", g_failures);
