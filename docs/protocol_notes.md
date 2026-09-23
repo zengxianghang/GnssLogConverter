@@ -1,42 +1,118 @@
 # Protocol notes
 
-## Unicore N4 R1.15
+## Target architecture
+
+The converter's binary target is NovAtel OEM7 format.
+
+Important examples:
+
+```text
+NovAtel RANGEA -> NovAtel RANGEB
+Unicore OBSVMA -> NovAtel RANGEB
+```
+
+Native Unicore binary output such as `OBSVMB` is not required.
+
+## Unicore N4 R1.15 input
 
 Primary implementation reference: *Unicore Reference Commands Manual For N4 High Precision Products_V2_CH_R1.15* (2026-06).
 
-### Binary framing
-
-- Sync: `AA 44 B5`.
-- Binary header: 24 bytes.
-- Header fields at documented offsets:
-  - CPU idle: byte 3
-  - Message ID: bytes 4-5
-  - Message length: bytes 6-7
-  - TimeRef: byte 8
-  - TimeStatus: byte 9
-  - week: bytes 10-11
-  - milliseconds: bytes 12-15
-  - version: bytes 16-19
-  - reserved: byte 20
-  - leap seconds: byte 21
-  - output delay: bytes 22-23
-- CRC is 32-bit and covers the binary header plus payload.
-- Appendix 1 initializes CRC to zero and applies the reflected `0xEDB88320` polynomial/table with no final XOR in the supplied C example.
-
 ### ASCII framing
 
-- ASCII log records start with `#`.
+- ASCII records start with `#`.
+- Header parsing follows Table 7-51.
 - ASCII CRC covers the bytes after `#` and before `*`.
-- Do not copy a source CRC into the target format; regenerate it from target bytes/text.
+- Do not copy a source CRC into the target format; regenerate the NovAtel binary CRC from the target bytes.
 
-### OBSVM
+### OBSVM source fields
 
-- Message ID: 12.
-- Payload starts with `obs Number` (`ULONG`, 4 bytes).
-- Each observation occupies 40 bytes.
+- OBSVM Message ID is 12 in the native Unicore protocol. This source ID is not copied into RANGEB.
+- Native OBSVM payload begins with `obs Number` (`ULONG`, 4 bytes).
+- Each native binary observation occupies 40 bytes.
 - Per-observation fields are `System Freq`, `PRN/slot`, pseudorange, ADR, pseudorange std x100, ADR std x10000, Doppler, C/N0 x100, reserved, lock time, and channel tracking status.
-- Important: the R1.15 ASCII OBSVMA example also prints the scaled integer fields (for example pseudorange std and C/N0) as their scaled integer values. Do not divide these values when serializing OBSVMA unless later authoritative documentation proves otherwise.
+- The ASCII OBSVMA example prints the scaled integer quality fields directly.
 
-### Open item: TimeRef / TimeStatus numeric values
+## NovAtel OEM7 target
 
-R1.15 identifies the one-byte binary fields and shows ASCII strings such as `GPS,FINE`, but the reviewed section does not define their numeric binary enum mapping. Do not infer the numeric mapping from names alone. Obtain an authoritative mapping from official documentation or a known-good receiver binary sample before enabling full ASCII -> binary header conversion.
+### Binary header
+
+Use the standard 28-byte OEM7 binary header:
+
+- sync `AA 44 12`
+- header length: 28
+- Message ID
+- Message Type
+- Port Address
+- Message Length
+- Sequence
+- Idle Time
+- Time Status
+- GPS Week
+- milliseconds into GPS week
+- Receiver Status
+- Reserved
+- Receiver S/W Version
+
+The standard NovAtel binary header does not contain a separate `TimeRef` byte.
+
+### TimeRef / TimeStatus
+
+For this project, Unicore `TimeRef` / `TimeStatus` follow the NovAtel conventions.
+
+- Parse the source Unicore `TimeRef` and use it to interpret/validate the source week/ms time base.
+- Do not add a non-standard `TimeRef` field to the NovAtel binary header.
+- Write `TimeStatus` using the NovAtel one-byte GPS reference time-status enum.
+
+Known NovAtel values include:
+
+```text
+20  UNKNOWN
+60  APPROXIMATE
+80  COARSEADJUSTING
+100 COARSE
+120 COARSESTEERING
+130 FREEWHEELING
+140 FINEADJUSTING
+160 FINE
+170 FINEBACKUPSTEERING
+180 FINESTEERING
+200 SATTIME
+```
+
+### RANGE target
+
+- Message ID: 43.
+- Payload starts with a 4-byte observation count.
+- Each RANGE observation occupies 44 bytes.
+- Per-observation fields are PRN/slot, `glofreq`, pseudorange, pseudorange sigma, ADR, ADR sigma, Doppler, C/N0, lock time, and channel tracking status.
+
+## OBSVMA -> RANGEB mapping
+
+Map source fields directly into the NovAtel RANGE representation; do not create an intermediate OBSVMB record.
+
+Quality-field scaling:
+
+```text
+NovAtel psr sigma (m)      = Unicore psr_std_x100 / 100.0
+NovAtel adr sigma (cycles) = Unicore adr_std_x10000 / 10000.0
+NovAtel C/N0 (dB-Hz)       = Unicore cn0_x100 / 100.0
+```
+
+Other direct physical-value mappings:
+
+```text
+pseudorange -> pseudorange
+ADR         -> ADR
+Doppler     -> Doppler
+lock time   -> lock time
+```
+
+PRN/frequency and tracking-status conversion require protocol-aware translation:
+
+- For GLONASS, convert the Unicore system-frequency field into NovAtel `glofreq` (`frequency channel + 7`) as defined by the target RANGE format.
+- For non-GLONASS signals, `glofreq` is normally zero except target-specific cases such as QZSS L1C/B.
+- Do not blindly copy the Unicore 32-bit tracking-status word. Several bit positions have similar meanings, but signal-type values and some status bits differ between the documented Unicore and current NovAtel definitions. Build the target status word field-by-field.
+
+## CRC
+
+Unicore ASCII CRC is only for validating the source line. NovAtel binary output must use the NovAtel CRC over the generated binary header + body.
