@@ -130,6 +130,7 @@ if exist build rmdir /s /q build
 mkdir build\Release >nul 2>nul
 mkdir build\obj_app >nul 2>nul
 mkdir build\obj_test >nul 2>nul
+mkdir build\obj_com1 >nul 2>nul
 
 set "CORE_SOURCES=src\byte_io.cpp src\crc32.cpp src\range_converter.cpp src\novatel\novatel_protocol.cpp src\novatel\novatel_range.cpp src\unicore\unicore_protocol.cpp src\unicore\unicore_obsvm.cpp"
 set "COMMON_FLAGS=/nologo /EHsc /O2 /std:c++14 /W4 /permissive- /I src"
@@ -142,9 +143,19 @@ echo [INFO] Building gnsslog_tests.exe ...
 cl %COMMON_FLAGS% /Fo"build\obj_test\\" /Fe"build\Release\gnsslog_tests.exe" tests\test_core.cpp %CORE_SOURCES%
 if errorlevel 1 goto :build_failed
 
-echo [INFO] Running tests ...
+echo [INFO] Building gnsslog_com1_roundtrip_test.exe ...
+cl %COMMON_FLAGS% /Fo"build\obj_com1\\" /Fe"build\Release\gnsslog_com1_roundtrip_test.exe" tests\test_com1_roundtrip.cpp %CORE_SOURCES%
+if errorlevel 1 goto :build_failed
+
+echo [INFO] Running core tests ...
 "build\Release\gnsslog_tests.exe"
 if errorlevel 1 goto :test_failed
+
+echo [INFO] Running COM1 -^> 0x20 -^> COM1 round-trip test ...
+"build\Release\gnsslog_com1_roundtrip_test.exe"
+if errorlevel 1 goto :test_failed
+
+echo [PASS] COM1 round-trip preserved: COM1 -^> 0x20 -^> COM1
 
 echo.
 echo [SUCCESS] Build and tests completed successfully.
