@@ -9,6 +9,7 @@ add_library(gnsslog_core
     src/byte_io.cpp
     src/crc32.cpp
     src/range_converter.cpp
+    src/eph_ion_converter.cpp
     src/novatel/novatel_protocol.cpp
     src/novatel/novatel_range.cpp
     src/unicore/unicore_protocol.cpp
@@ -40,3 +41,7 @@ add_test(NAME gnsslog_tests COMMAND gnsslog_tests)
 add_executable(gnsslog_com1_roundtrip_test tests/test_com1_roundtrip.cpp)
 target_link_libraries(gnsslog_com1_roundtrip_test PRIVATE gnsslog_core)
 add_test(NAME gnsslog_com1_roundtrip_test COMMAND gnsslog_com1_roundtrip_test)
+
+add_executable(gnsslog_eph_ion_test tests/test_eph_ion.cpp)
+target_link_libraries(gnsslog_eph_ion_test PRIVATE gnsslog_core)
+add_test(NAME gnsslog_eph_ion_test COMMAND gnsslog_eph_ion_test)
