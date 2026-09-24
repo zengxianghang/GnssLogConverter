@@ -28,6 +28,7 @@ void PrintHelp(const char* exe)
     std::printf("  NovAtel RANGEB -> NovAtel RANGEA\n\n");
     std::printf("Notes:\n");
     std::printf("  OBSVMA is converted directly to RANGEB; no OBSVMB is generated.\n");
+    std::printf("  Unsupported ASCII records are skipped silently.\n");
     std::printf("  ch-tr-status is copied bit-for-bit without reinterpretation.\n");
 }
 
@@ -106,11 +107,7 @@ int ConvertAsciiFileToBinary(const char* input_path, const char* output_path)
             continue;
         }
         if (!gnsslog::IsSupportedRangeAsciiLine(line.c_str())) {
-            std::fprintf(stderr,
-                         "[ERROR] Unsupported ASCII record at line %zu. "
-                         "Current executable scope is RANGEA/OBSVMA.\n",
-                         line_number);
-            return 3;
+            continue;
         }
 
         std::uint8_t* record = NULL;
