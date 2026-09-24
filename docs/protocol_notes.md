@@ -9,6 +9,8 @@ Important examples:
 ```text
 NovAtel RANGEA -> NovAtel RANGEB
 Unicore OBSVMA -> NovAtel RANGEB
+Unicore GPSEPHA -> NovAtel GPSEPHEMB
+Unicore BD3EPHA -> NovAtel BDSBCNAV1/2/3EPHEMERISB
 ```
 
 Native Unicore binary output such as `OBSVMB` is not required.
@@ -109,8 +111,8 @@ lock time   -> lock time
 
 PRN/frequency handling:
 
-- For GLONASS, convert the Unicore system-frequency field into NovAtel `glofreq` (`frequency channel + 7`) as required by the RANGE record.
-- For non-GLONASS signals, set `glofreq` according to the target RANGE field definition.
+- For GLONASS, the Unicore `System Freq` field is already defined as frequency channel + 7 and is copied into NovAtel `glofreq`.
+- For non-GLONASS signals, the source field is unused and is copied as supplied.
 
 ### Tracking-status passthrough rule
 
@@ -129,6 +131,59 @@ Requirements:
 - Do not reconstruct the target word field-by-field.
 - This is a project requirement even if vendor documentation describes individual bit meanings differently.
 - Add tests using representative values such as `00181c23`, `00191c23`, and values with high bits set to prove bit-for-bit preservation.
+
+## EPH / ION conversion matrix
+
+The following Unicore N4 ASCII sources are mapped directly into NovAtel-framed binary records. Source field order and types come from the N4 R1.15 manual; target field order and types follow the corresponding NovAtel/compatible decoded-log schema.
+
+| Unicore ASCII | NovAtel binary target | Message ID | Mapping notes |
+| --- | --- | ---: | --- |
+| `GPSEPHA` | `GPSEPHEMB` | 7 | 224-byte payload is field-compatible and copied field-by-field. |
+| `GLOEPHA` | `GLOEPHEMERISB` | 723 | 144-byte payload is field-compatible. `Sloto` is already the offset PRN representation used by the target. |
+| `QZSSEPHA` | `QZSSEPHEMERISB` | 1336 | Source PRN 1..10 becomes target PRN 193..202 (`+192`). Target-only fit/reserved bytes are zero. |
+| `GALEPHA` | `GALEPHEMERISB` | 1122 | Legacy/compatibility decoded Galileo ephemeris layout; current OEM7 documentation replaces this log with separate FNAV/INAV logs. |
+| `BDSEPHA` | `BD2EPHEMB` | 1047 | Compatibility layout. Source BDS PRN 1..63 becomes target offset PRN 161..223 (`+160`). |
+| `GPSIONA` | `IONUTCB` | 8 | Eight ionospheric coefficients are copied. Source does not carry the UTC model contained in IONUTC, so unavailable UTC fields are zero. |
+| `BDSIONA` | `BD2IONUTCB` | 2010 | Same rule as GPSION: ion coefficients copied; unavailable UTC half zeroed. |
+| `GALIONA` | `GALIONOB` | 1127 | Ai0/Ai1/Ai2 and SF1..SF5 copied; source-only reserved word is dropped. |
+| `IRNSSEPHA` | `NAVICEPHEMERISB` | 2123 | GPS week -> NavIC week by `-1024`; `A -> sqrt(A)` for RootA; URA variance -> NavIC URA index; alert/AutoNav bits extracted from source Flag. |
+| `BD3EPHA` FreqType 0 | `BDSBCNAV1EPHEMERISB` | 2371 | GPS week -> BDT week by `-1356`; B1C/B2a TGD and B1C ISC mapped. |
+| `BD3EPHA` FreqType 1 | `BDSBCNAV2EPHEMERISB` | 2372 | Same orbital/clock conversion; B2a ISC mapped. |
+| `BD3EPHA` FreqType 2 | `BDSBCNAV3EPHEMERISB` | 2412 | B2b target; B2bI TGD mapped. |
+
+### Deliberately unsupported source
+
+`BD3IONA` is currently skipped silently. The N4 source is a 9-coefficient BeiDou-3 ionosphere model, and no verified equivalent NovAtel decoded log with the same model has been identified. The converter does not invent a target Message ID or silently reinterpret it as the 8-coefficient BDS/GPS Klobuchar-style model.
+
+### Lossy/constructed fields
+
+Some cross-vendor mappings cannot be fully lossless because the source and target messages are not identical:
+
+- `GPSIONA`/`BDSIONA` do not contain the UTC polynomial/leap-second fields required by `IONUTC`/`BD2IONUTC`; these fields are written as zero rather than populated with unrelated source metadata.
+- `QZSSEPHA` does not contain the four target bytes following the common 224-byte ephemeris block; they are written as zero.
+- `BD3EPHA` does not provide every integrity/reserved bit in the target B-CNAV status fields. Verified source health and SISMAI bits are populated; unavailable target bits are zero.
+- `IRNSSEPHA` provides semi-major axis `A` and URA variance, while `NAVICEPHEMERIS` expects `RootA` and a URA index. These are converted mathematically rather than copied byte-for-byte.
+
+## Native NovAtel EPH / ION codecs
+
+The converter also supports ASCII <-> binary for these target records so generated binary data can be inspected and round-tripped:
+
+- `GPSEPHEM` (7)
+- `GLOEPHEMERIS` (723)
+- `QZSSEPHEMERIS` (1336)
+- `GALEPHEMERIS` compatibility log (1122)
+- `BD2EPHEM` compatibility log (1047)
+- `IONUTC` (8)
+- `BD2IONUTC` compatibility log (2010)
+- `GALIONO` (1127)
+- `NAVICEPHEMERIS` (2123)
+- `BDSBCNAV1EPHEMERIS` (2371)
+- `BDSBCNAV2EPHEMERIS` (2372)
+- `BDSBCNAV3EPHEMERIS` (2412)
+
+## Unsupported records in mixed files
+
+Unsupported ASCII records are skipped silently. Supported message names with malformed fields remain errors. For binary input, a valid but unsupported NovAtel record is also skipped silently after its framing/CRC is validated, allowing mixed binary logs to be converted without aborting on unrelated messages.
 
 ## CRC
 
