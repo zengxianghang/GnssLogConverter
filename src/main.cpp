@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "eph_ion_converter.h"
 #include "novatel/novatel_protocol.h"
 #include "range_converter.h"
 
@@ -23,12 +24,19 @@ void PrintHelp(const char* exe)
     std::printf("  %s -h\n", exe);
     std::printf("  %s <input> <output> [--to ascii|binary]\n\n", exe);
     std::printf("Currently executable conversions:\n");
-    std::printf("  NovAtel RANGEA -> NovAtel RANGEB\n");
+    std::printf("  NovAtel RANGEA <-> NovAtel RANGEB\n");
     std::printf("  Unicore OBSVMA -> NovAtel RANGEB\n");
-    std::printf("  NovAtel RANGEB -> NovAtel RANGEA\n\n");
+    std::printf("  NovAtel GPSEPHEM/GLOEPHEMERIS/QZSSEPHEMERIS EPH ASCII <-> binary\n");
+    std::printf("  NovAtel GALEPHEMERIS/BD2EPHEM EPH ASCII <-> binary\n");
+    std::printf("  NovAtel IONUTC/BD2IONUTC/GALIONO ASCII <-> binary\n");
+    std::printf("  NovAtel NAVICEPHEMERIS/BDSBCNAV1/2/3EPHEMERIS ASCII <-> binary\n");
+    std::printf("  Unicore GPSEPH/GLOEPH/QZSSEPH/GALEPH/BDSEPH -> NovAtel binary\n");
+    std::printf("  Unicore GPSION/BDSION/GALION -> NovAtel binary\n");
+    std::printf("  Unicore IRNSSEPH/BD3EPH -> NovAtel binary\n\n");
     std::printf("Notes:\n");
     std::printf("  OBSVMA is converted directly to RANGEB; no OBSVMB is generated.\n");
-    std::printf("  Unsupported ASCII records are skipped silently.\n");
+    std::printf("  Unsupported ASCII and binary records are skipped silently.\n");
+    std::printf("  BD3IONA is skipped because no verified equivalent NovAtel decoded log is available.\n");
     std::printf("  ch-tr-status is copied bit-for-bit without reinterpretation.\n");
 }
 
@@ -106,18 +114,28 @@ int ConvertAsciiFileToBinary(const char* input_path, const char* output_path)
         if (line.empty()) {
             continue;
         }
-        if (!gnsslog::IsSupportedRangeAsciiLine(line.c_str())) {
+
+        const bool is_range = gnsslog::IsSupportedRangeAsciiLine(line.c_str());
+        const bool is_eph_ion = gnsslog::IsSupportedEphIonAsciiLine(line.c_str());
+        if (!is_range && !is_eph_ion) {
             continue;
         }
 
         std::uint8_t* record = NULL;
         std::size_t record_size = 0U;
         char error[256] = {};
-        if (!gnsslog::ConvertRangeAsciiLineToBinary(line.c_str(),
-                                                     &record,
-                                                     &record_size,
-                                                     error,
-                                                     sizeof(error))) {
+        const bool ok = is_range
+            ? gnsslog::ConvertRangeAsciiLineToBinary(line.c_str(),
+                                                      &record,
+                                                      &record_size,
+                                                      error,
+                                                      sizeof(error))
+            : gnsslog::ConvertEphIonAsciiLineToBinary(line.c_str(),
+                                                       &record,
+                                                       &record_size,
+                                                       error,
+                                                       sizeof(error));
+        if (!ok) {
             std::fprintf(stderr, "[ERROR] Line %zu: %s\n", line_number, error);
             return 3;
         }
@@ -181,16 +199,35 @@ int ConvertBinaryFileToAscii(const char* input_path, const char* output_path)
             std::fprintf(stderr, "[ERROR] Truncated binary record at byte %zu.\n", offset);
             return 3;
         }
+        if (!gnsslog::novatel::ValidateBinaryRecordCrc(&bytes[offset], record_size)) {
+            std::fprintf(stderr, "[ERROR] Invalid NovAtel binary CRC at byte %zu.\n", offset);
+            return 3;
+        }
+
+        const bool is_range = header.message_id == gnsslog::novatel::kMessageIdRange;
+        const bool is_eph_ion = gnsslog::IsSupportedEphIonBinaryMessageId(header.message_id);
+        if (!is_range && !is_eph_ion) {
+            offset += record_size;
+            continue;
+        }
 
         char* line = NULL;
         std::size_t line_size = 0U;
         char error[256] = {};
-        if (!gnsslog::ConvertRangeBinaryRecordToAscii(&bytes[offset],
-                                                       record_size,
-                                                       &line,
-                                                       &line_size,
-                                                       error,
-                                                       sizeof(error))) {
+        const bool ok = is_range
+            ? gnsslog::ConvertRangeBinaryRecordToAscii(&bytes[offset],
+                                                        record_size,
+                                                        &line,
+                                                        &line_size,
+                                                        error,
+                                                        sizeof(error))
+            : gnsslog::ConvertEphIonBinaryRecordToAscii(&bytes[offset],
+                                                         record_size,
+                                                         &line,
+                                                         &line_size,
+                                                         error,
+                                                         sizeof(error));
+        if (!ok) {
             std::fprintf(stderr, "[ERROR] Binary record at byte %zu: %s\n", offset, error);
             return 3;
         }
@@ -205,7 +242,7 @@ int ConvertBinaryFileToAscii(const char* input_path, const char* output_path)
         ++converted;
     }
 
-    std::printf("Converted %zu RANGEB record(s) to RANGEA: %s\n",
+    std::printf("Converted %zu supported NovAtel binary record(s) to ASCII: %s\n",
                 converted,
                 output_path);
     return 0;

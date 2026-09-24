@@ -131,8 +131,9 @@ mkdir build\Release >nul 2>nul
 mkdir build\obj_app >nul 2>nul
 mkdir build\obj_test >nul 2>nul
 mkdir build\obj_com1 >nul 2>nul
+mkdir build\obj_eph_ion >nul 2>nul
 
-set "CORE_SOURCES=src\byte_io.cpp src\crc32.cpp src\range_converter.cpp src\novatel\novatel_protocol.cpp src\novatel\novatel_range.cpp src\unicore\unicore_protocol.cpp src\unicore\unicore_obsvm.cpp"
+set "CORE_SOURCES=src\byte_io.cpp src\crc32.cpp src\range_converter.cpp src\eph_ion_converter.cpp src\novatel\novatel_protocol.cpp src\novatel\novatel_range.cpp src\unicore\unicore_protocol.cpp src\unicore\unicore_obsvm.cpp"
 set "COMMON_FLAGS=/nologo /EHsc /O2 /std:c++14 /W4 /permissive- /I src"
 
 echo [INFO] Building GnssLogConverter.exe ...
@@ -147,6 +148,10 @@ echo [INFO] Building gnsslog_com1_roundtrip_test.exe ...
 cl %COMMON_FLAGS% /Fo"build\obj_com1\\" /Fe"build\Release\gnsslog_com1_roundtrip_test.exe" tests\test_com1_roundtrip.cpp %CORE_SOURCES%
 if errorlevel 1 goto :build_failed
 
+echo [INFO] Building gnsslog_eph_ion_test.exe ...
+cl %COMMON_FLAGS% /Fo"build\obj_eph_ion\\" /Fe"build\Release\gnsslog_eph_ion_test.exe" tests\test_eph_ion.cpp %CORE_SOURCES%
+if errorlevel 1 goto :build_failed
+
 echo [INFO] Running core tests ...
 "build\Release\gnsslog_tests.exe"
 if errorlevel 1 goto :test_failed
@@ -156,6 +161,10 @@ echo [INFO] Running COM1 -^> 0x20 -^> COM1 round-trip test ...
 if errorlevel 1 goto :test_failed
 
 echo [PASS] COM1 round-trip preserved: COM1 -^> 0x20 -^> COM1
+
+echo [INFO] Running EPH/ION conversion tests ...
+"build\Release\gnsslog_eph_ion_test.exe"
+if errorlevel 1 goto :test_failed
 
 echo.
 echo [SUCCESS] Build and tests completed successfully.
