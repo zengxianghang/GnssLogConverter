@@ -1,11 +1,12 @@
 /*
  * pos_convert.cpp
  *
- * One executable, four conversion modes:
+ * One executable, five conversion modes:
  *   1) Position result -> GGA + INSPVA + BESTPOS
  *   2) INSPVA ASCII    -> BESTPOS ASCII
  *   3) INSPVAX ASCII   -> INSPVA ASCII
  *   4) INSPVAX ASCII   -> BESTPOS ASCII
+ *   5) CSV/TSV          -> INSPVA ASCII
  *
  * Key behavior:
  *   - INSPVAX source CRC is always ignored.
@@ -47,7 +48,8 @@ enum ProgramMode
     PROGRAM_MODE_POSITION_TO_ALL = 0,
     PROGRAM_MODE_INSPVA_TO_BESTPOS = 1,
     PROGRAM_MODE_INSPVAX_TO_INSPVA = 2,
-    PROGRAM_MODE_INSPVAX_TO_BESTPOS = 3
+    PROGRAM_MODE_INSPVAX_TO_BESTPOS = 3,
+    PROGRAM_MODE_CSV_TO_INSPVA = 4
 };
 
 struct InspvaRecord
@@ -170,6 +172,10 @@ struct ProgramOptions
     unsigned int inputHz;
     unsigned int outputHz;
     unsigned int decimationFactor;
+
+    /* CSV has no roll/pitch columns: use explicit defaults or overrides. */
+    double csvRoll;
+    double csvPitch;
 };
 
 static void PrintUsage(const char *programName)
@@ -189,12 +195,15 @@ static void PrintUsage(const char *programName)
         "  4) INSPVAX ASCII -> BESTPOS ASCII:\n"
         "     %s --inspvax-to-bestpos input.log output.bestpos [options]\n"
         "\n"
+        "  5) CSV/TSV -> INSPVA ASCII:\n"
+        "     %s --csv-to-inspva input.csv output.inspva [options]\n"
+        "\n"
         "Common options:\n"
         "  --sat-num N          Satellite count written to GGA/BESTPOS, default 0\n"
         "  --rate OUT_HZ        Auto-detect input rate and downsample without interpolation\n"
         "  --rate IN_HZ OUT_HZ  Manual source/output rates; IN_HZ must be exactly\n"
         "                       divisible by OUT_HZ\n"
-        "  --help               Show this help\n"
+        "  -h, --help           Show this help\n"
         "\n"
         "Position-result-only options:\n"
         "  --week N             GNSS week used when the input has no Week field\n"
@@ -214,6 +223,14 @@ static void PrintUsage(const char *programName)
         "                       option, non-INSPVAX records are copied unchanged.\n"
         "  --ignore-input-crc   Compatibility option; INSPVAX source CRC is always ignored\n"
         "\n"
+        "CSV-to-INSPVA-only options:\n"
+        "  --week N             GNSS week of first CSV sample (required unless UTC\n"
+        "                       contains full date-time and Leap is known)\n"
+        "  --roll DEG           Constant roll, default 0 (CSV has no roll column)\n"
+        "  --pitch DEG          Constant pitch, default 0 (CSV has no pitch column)\n"
+        "  CSV: TOW is already GNSS seconds-of-week; Leap is NOT added again.\n"
+        "  UTC full date-time and Leap may be used to infer week if --week absent.\n"
+        "\n"
         "INSPVAX-to-BESTPOS notes:\n"
         "  - MSL height, undulation, position type and position sigmas are taken\n"
         "    directly from INSPVAX.\n"
@@ -224,7 +241,16 @@ static void PrintUsage(const char *programName)
         "  %s input.txt result --week 2362 --rate 10\n"
         "  %s --inspva-to-bestpos input.inspva output.bestpos --geoid-sep -17\n"
         "  %s --inspvax-to-inspva input.log output.log --only-inspva\n"
-        "  %s --inspvax-to-bestpos input.log output.bestpos --sat-num 30 --rate 10\n",
+        "  %s --inspvax-to-bestpos input.log output.bestpos --sat-num 30 --rate 10\n"
+        "  %s --csv-to-inspva input.csv output.inspva --week 2447\n"
+        "  %s --csv-to-inspva input.tsv output.inspva --week 2447 --rate 10\n"
+        "  %s --csv-to-inspva input.csv output.inspva --roll 0 --pitch 0\n"
+        "  %s -h\n",
+        programName,
+        programName,
+        programName,
+        programName,
+        programName,
         programName,
         programName,
         programName,
@@ -327,7 +353,8 @@ static bool ParseCommandLine(int argc,
         return false;
     }
 
-    if (argc == 2 && std::strcmp(argv[1], "--help") == 0)
+    if (argc == 2 && (std::strcmp(argv[1], "--help") == 0 ||
+                      std::strcmp(argv[1], "-h") == 0))
     {
         PrintUsage(argv[0]);
         return false;
@@ -350,6 +377,8 @@ static bool ParseCommandLine(int argc,
     options->inputHz = 0;
     options->outputHz = 0;
     options->decimationFactor = 1;
+    options->csvRoll = 0.0;
+    options->csvPitch = 0.0;
 
     int index = 0;
 
@@ -392,6 +421,19 @@ static bool ParseCommandLine(int argc,
         options->outputPrefix = argv[3];
         index = 4;
     }
+    else if (argc >= 2 && std::strcmp(argv[1], "--csv-to-inspva") == 0)
+    {
+        if (argc < 4)
+        {
+            PrintUsage(argv[0]);
+            return false;
+        }
+
+        options->mode = PROGRAM_MODE_CSV_TO_INSPVA;
+        options->inputFileName = argv[2];
+        options->outputPrefix = argv[3];
+        index = 4;
+    }
     else
     {
         if (argc < 3)
@@ -410,16 +452,18 @@ static bool ParseCommandLine(int argc,
     {
         const char *option = argv[index];
 
-        if (std::strcmp(option, "--help") == 0)
+        if (std::strcmp(option, "--help") == 0 ||
+            std::strcmp(option, "-h") == 0)
         {
             PrintUsage(argv[0]);
             return false;
         }
         else if (std::strcmp(option, "--week") == 0)
         {
-            if (options->mode != PROGRAM_MODE_POSITION_TO_ALL)
+            if (options->mode != PROGRAM_MODE_POSITION_TO_ALL &&
+                options->mode != PROGRAM_MODE_CSV_TO_INSPVA)
             {
-                std::printf("--week is only valid in position-result mode.\n");
+                std::printf("--week is only valid in position-result and CSV modes.\n");
                 return false;
             }
 
@@ -431,6 +475,27 @@ static bool ParseCommandLine(int argc,
                 return false;
             }
 
+            index += 2;
+        }
+        else if (std::strcmp(option, "--roll") == 0 ||
+                 std::strcmp(option, "--pitch") == 0)
+        {
+            if (options->mode != PROGRAM_MODE_CSV_TO_INSPVA)
+            {
+                std::printf("--roll and --pitch are only valid in CSV-to-INSPVA mode.\n");
+                return false;
+            }
+            double value = 0.0;
+            if (index + 1 >= argc ||
+                !ParseDoubleStrict(argv[index + 1], &value))
+            {
+                std::printf("Invalid --roll/--pitch value.\n");
+                return false;
+            }
+            if (std::strcmp(option, "--roll") == 0)
+                options->csvRoll = value;
+            else
+                options->csvPitch = value;
             index += 2;
         }
         else if (std::strcmp(option, "--utc-offset") == 0)
@@ -4122,16 +4187,549 @@ static int RunInspvaxToBestPos(
     return malformedRecords == 0U ? 0 : 3;
 }
 
+
+/* -----------------------------------------------------------------------
+ * CSV/TSV -> INSPVA. CSV input column names are mandatory and matched
+ * case-insensitively, avoiding positional assumptions for reordered data.
+ * Supported separators: comma and tab (selected from the first header row).
+ * CSV quoted values and doubled quotes are supported.
+ * ----------------------------------------------------------------------- */
+
+enum CsvColumn
+{
+    CSV_TOW, CSV_UTC, CSV_LEAP, CSV_Q, CSV_LAT, CSV_LON,
+    CSV_HEIGHT, CSV_POS_X, CSV_POS_Y, CSV_POS_Z,
+    CSV_VEL_X, CSV_VEL_Y, CSV_VEL_Z, CSV_VEL_E, CSV_VEL_N,
+    CSV_VEL_U, CSV_HEADING, CSV_REQUIRED_COUNT
+};
+
+static const char *CSV_COLUMN_NAMES[CSV_REQUIRED_COUNT] =
+{
+    "TOW", "UTC", "Leap", "Q", "Lat", "Lon", "Height",
+    "Pos_x", "Pos_y", "Pos_z", "Vel_x", "Vel_y", "Vel_z",
+    "Vel_e", "Vel_n", "Vel_u", "Heading"
+};
+
+struct CsvHeader
+{
+    char separator;
+    int columnCount;
+    int indices[CSV_REQUIRED_COUNT];
+};
+
+struct CsvPositionRecord
+{
+    double tow;
+    double latitude;
+    double longitude;
+    double ellipsoidalHeight;
+    double eastVelocity;
+    double northVelocity;
+    double upVelocity;
+    double heading;
+    int q;
+    bool hasUtcDate;
+    unsigned int utcDateWeek;
+    double utcDateTow;
+};
+
+static bool EqualsAsciiIgnoreCase(const char *a, const char *b)
+{
+    if (a == NULL || b == NULL)
+        return false;
+    while (*a != '\0' && *b != '\0')
+    {
+        char ca = *a;
+        char cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca = static_cast<char>(ca + 32);
+        if (cb >= 'A' && cb <= 'Z') cb = static_cast<char>(cb + 32);
+        if (ca != cb) return false;
+        ++a; ++b;
+    }
+    return *a == '\0' && *b == '\0';
+}
+
+/* Split in place; the character buffer must be writable. */
+static int SplitCsvFields(char *line, char separator,
+                          char *fields[], int capacity)
+{
+    if (line == NULL || fields == NULL || capacity <= 0)
+        return -1;
+    char *read = line;
+    char *write = line;
+    int count = 0;
+    for (;;)
+    {
+        if (count == capacity)
+            return -1;
+        fields[count++] = write;
+        bool quoted = false;
+        bool afterQuote = false;
+        while (*read != '\0' && *read != '\r' && *read != '\n')
+        {
+            const char ch = *read++;
+            if (quoted)
+            {
+                if (ch == '"')
+                {
+                    if (*read == '"')
+                    {
+                        *write++ = '"';
+                        ++read;
+                    }
+                    else
+                        quoted = false, afterQuote = true;
+                }
+                else
+                    *write++ = ch;
+            }
+            else if (ch == separator)
+            {
+                break;
+            }
+            else if (ch == '"')
+            {
+                if (write == fields[count - 1])
+                    quoted = true;
+                else
+                    return -1;
+            }
+            else if (afterQuote && ch != ' ' && ch != '\t')
+            {
+                return -1;
+            }
+            else
+                *write++ = ch;
+        }
+        if (quoted)
+            return -1;
+        const bool hasMore = read[-1] == separator;
+        *write++ = '\0';
+        if (!hasMore)
+            break;
+    }
+    for (int i = 0; i < count; ++i)
+    {
+        char *first = fields[i];
+        while (*first == ' ' || *first == '\t') ++first;
+        if (first != fields[i]) fields[i] = first;
+        char *last = first + std::strlen(first);
+        while (last > first && (last[-1] == ' ' || last[-1] == '\t')) --last;
+        *last = '\0';
+    }
+    return count;
+}
+
+static bool ParseCsvHeader(char *line, CsvHeader *header)
+{
+    if (line == NULL || header == NULL) return false;
+    char *text = line;
+    if (static_cast<unsigned char>(text[0]) == 0xEF &&
+        static_cast<unsigned char>(text[1]) == 0xBB &&
+        static_cast<unsigned char>(text[2]) == 0xBF)
+        text += 3;  /* optional UTF-8 BOM */
+    header->separator = std::strchr(text, '\t') != NULL ? '\t' : ',';
+    char *fields[64];
+    const int count = SplitCsvFields(text, header->separator, fields, 64);
+    if (count <= 0)
+    {
+        std::fprintf(stderr, "Invalid CSV header.\n");
+        return false;
+    }
+    header->columnCount = count;
+    for (int i = 0; i < CSV_REQUIRED_COUNT; ++i) header->indices[i] = -1;
+    for (int col = 0; col < count; ++col)
+    {
+        for (int i = 0; i < CSV_REQUIRED_COUNT; ++i)
+        {
+            if (EqualsAsciiIgnoreCase(fields[col], CSV_COLUMN_NAMES[i]))
+            {
+                if (header->indices[i] != -1)
+                {
+                    std::fprintf(stderr, "Duplicate CSV column: %s\n", CSV_COLUMN_NAMES[i]);
+                    return false;
+                }
+                header->indices[i] = col;
+            }
+        }
+    }
+    bool ok = true;
+    for (int i = 0; i < CSV_REQUIRED_COUNT; ++i)
+    {
+        if (header->indices[i] < 0)
+        {
+            std::fprintf(stderr, "Missing CSV column: %s\n", CSV_COLUMN_NAMES[i]);
+            ok = false;
+        }
+    }
+    return ok;
+}
+
+/* Days since 1970-01-01, Gregorian calendar; no OS timezone dependency. */
+static int64_t DaysFromCivil(int year, unsigned int month, unsigned int day)
+{
+    year -= month <= 2U;
+    const int era = (year >= 0 ? year : year - 399) / 400;
+    const unsigned int yoe = static_cast<unsigned int>(year - era * 400);
+    const int adjustedMonth = static_cast<int>(month) + (month > 2U ? -3 : 9);
+    const unsigned int doy = (153U * static_cast<unsigned int>(adjustedMonth) + 2U) / 5U + day - 1U;
+    const unsigned int doe = yoe * 365U + yoe / 4U - yoe / 100U + doy;
+    return static_cast<int64_t>(era) * 146097 + static_cast<int64_t>(doe) - 719468;
+}
+
+static bool ParseUtcDateToGpsTime(const char *utcText, double leap,
+                                  unsigned int *week, double *tow)
+{
+    if (utcText == NULL || week == NULL || tow == NULL ||
+        !std::isfinite(leap) || leap < 0.0 || leap > 60.0)
+        return false;
+    int y = 0, m = 0, d = 0, h = 0, min = 0;
+    double sec = 0.0;
+    char sep = '\0', extra = '\0';
+    int count = std::sscanf(utcText, "%d-%d-%d%c%d:%d:%lf%c",
+                            &y, &m, &d, &sep, &h, &min, &sec, &extra);
+    if (count < 7 || (sep != 'T' && sep != ' ') ||
+        (count == 8 && extra != 'Z'))
+    {
+        count = std::sscanf(utcText, "%d/%d/%d%c%d:%d:%lf%c",
+                            &y, &m, &d, &sep, &h, &min, &sec, &extra);
+        if (count < 7 || (sep != 'T' && sep != ' ') ||
+            (count == 8 && extra != 'Z'))
+            return false;
+    }
+    if (y < 1980 || y > 9999 || m < 1 || m > 12 ||
+        d < 1 || h < 0 || h > 23 || min < 0 || min > 59 ||
+        sec < 0.0 || sec >= 60.0)
+        return false;
+    const int mdays[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    int daysInMonth = mdays[m - 1];
+    if (m == 2 && (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)))
+        daysInMonth = 29;
+    if (d > daysInMonth) return false;
+    /* Unix day 3657 is 1980-01-06, GPS epoch. */
+    const int64_t days = DaysFromCivil(y, static_cast<unsigned int>(m),
+                                         static_cast<unsigned int>(d)) - 3657;
+    const double gpsSec = static_cast<double>(days) * 86400.0 +
+                          static_cast<double>(h * 3600 + min * 60) + sec + leap;
+    if (gpsSec < 0.0) return false;
+    const double wholeWeek = std::floor(gpsSec / GNSS_WEEK_SECONDS);
+    if (wholeWeek >= static_cast<double>(UINT_MAX)) return false;
+    *week = static_cast<unsigned int>(wholeWeek);
+    *tow = gpsSec - wholeWeek * GNSS_WEEK_SECONDS;
+    return true;
+}
+
+static bool ParseCsvPositionRow(char *line, const CsvHeader *header,
+                                CsvPositionRecord *record)
+{
+    if (line == NULL || header == NULL || record == NULL) return false;
+    char *fields[64];
+    const int count = SplitCsvFields(line, header->separator, fields, 64);
+    if (count != header->columnCount) return false;
+    double qValue = 0.0, leap = 0.0;
+#define CSV_GET(name, target) \
+    if (!ParseDoubleStrict(fields[header->indices[name]], &target)) return false
+    CSV_GET(CSV_TOW, record->tow);
+    CSV_GET(CSV_Q, qValue);
+    CSV_GET(CSV_LAT, record->latitude);
+    CSV_GET(CSV_LON, record->longitude);
+    CSV_GET(CSV_HEIGHT, record->ellipsoidalHeight);
+    CSV_GET(CSV_VEL_E, record->eastVelocity);
+    CSV_GET(CSV_VEL_N, record->northVelocity);
+    CSV_GET(CSV_VEL_U, record->upVelocity);
+    CSV_GET(CSV_HEADING, record->heading);
+#undef CSV_GET
+    if (record->tow < 0.0 || record->tow >= GNSS_WEEK_SECONDS ||
+        record->latitude < -90.0 || record->latitude > 90.0 ||
+        record->longitude < -180.0 || record->longitude > 180.0 ||
+        qValue < static_cast<double>(INT_MIN) || qValue > static_cast<double>(INT_MAX) ||
+        std::fabs(qValue - std::floor(qValue + 0.5)) > 1e-6)
+        return false;
+    record->q = static_cast<int>(std::floor(qValue + 0.5));
+    /* ECEF position/velocity columns are optional data and are ignored. */
+    record->hasUtcDate = false;
+    /* UTC can be a numeric or HMS field, in which case --week is required. */
+    const char *utc = fields[header->indices[CSV_UTC]];
+    if (std::strchr(utc, '-') != NULL || std::strchr(utc, '/') != NULL)
+    {
+        if (!ParseDoubleStrict(fields[header->indices[CSV_LEAP]], &leap) ||
+            !ParseUtcDateToGpsTime(utc, leap, &record->utcDateWeek,
+                                   &record->utcDateTow))
+            return false;
+        record->hasUtcDate = true;
+        /* When UTC is a full date, TOW must agree with UTC + Leap. */
+        const double err = std::fabs(record->utcDateTow - record->tow);
+        if (err > 0.5 && std::fabs(err - GNSS_WEEK_SECONDS) > 0.5)
+            return false;
+    }
+    else
+    {
+        /* Leap field may be blank if --week supplies week. */
+        if (*fields[header->indices[CSV_LEAP]] != '\0' &&
+            !ParseDoubleStrict(fields[header->indices[CSV_LEAP]], &leap))
+            return false;
+    }
+    return true;
+}
+
+static bool BuildInspvaFromCsv(const CsvPositionRecord *r,
+                               unsigned int week, const ProgramOptions *options,
+                               char *output, size_t outputSize)
+{
+    if (r == NULL || options == NULL || output == NULL || outputSize == 0)
+        return false;
+    double azimuth = std::fmod(r->heading, 360.0);
+    if (azimuth < 0.0) azimuth += 360.0;
+    char body[SENTENCE_BUFFER_SIZE];
+    const int length = std::snprintf(
+        body, sizeof(body),
+        "INSPVAA,%s,0,0.0,%s,%u,%.3f,00000000,0000,0;"
+        "%u,%.9f,%.11f,%.11f,%.4f,%.4f,%.4f,%.4f,%.9f,%.9f,%.9f,%s",
+        NOVATEL_PORT, NOVATEL_TIME_STATUS,
+        week, r->tow, week, r->tow,
+        r->latitude, r->longitude, r->ellipsoidalHeight,
+        r->northVelocity, r->eastVelocity, r->upVelocity,
+        options->csvRoll, options->csvPitch, azimuth,
+        MapInsStatus(r->q));
+    if (length <= 0 || static_cast<size_t>(length) >= sizeof(body))
+        return false;
+    const uint32_t crc = CalculateNovatelCrc32(body);
+    const int written = std::snprintf(output, outputSize, "#%s*%08x\r\n",
+                                      body, static_cast<unsigned int>(crc));
+    return written > 0 && static_cast<size_t>(written) < outputSize;
+}
+
+static bool DetectCsvInputRate(FILE *inputFile, const CsvHeader *header,
+                               RateDetectionResult *result)
+{
+    if (inputFile == NULL || header == NULL || result == NULL) return false;
+    /* The header has already been read; start the data from that position. */
+    double intervals[RATE_DETECT_MAX_INTERVALS];
+    unsigned int intervalCount = 0, validCount = 0;
+    bool hasPrev = false;
+    double prevTow = 0.0;
+    char line[LINE_BUFFER_SIZE];
+    while (intervalCount < RATE_DETECT_MAX_INTERVALS &&
+           validCount < RATE_DETECT_MAX_VALID_RECORDS &&
+           std::fgets(line, sizeof(line), inputFile) != NULL)
+    {
+        CsvPositionRecord r;
+        if (!ParseCsvPositionRow(line, header, &r)) continue;
+        ++validCount;
+        if (hasPrev)
+        {
+            double dt = r.tow - prevTow;
+            if (dt < -GNSS_WEEK_SECONDS / 2.0) dt += GNSS_WEEK_SECONDS;
+            if (dt > 0.0 && dt <= 10.0)
+                intervals[intervalCount++] = dt;
+        }
+        prevTow = r.tow;
+        hasPrev = true;
+    }
+    if (intervalCount < 5)
+    {
+        std::fprintf(stderr, "CSV rate detection failed: fewer than 5 intervals.\n");
+        return false;
+    }
+    std::qsort(intervals, intervalCount, sizeof(intervals[0]),
+               CompareDoubleAscending);
+    const double representative = intervals[(intervalCount - 1U) / 5U];
+    const double rawHz = 1.0 / representative;
+    if (rawHz > RATE_DETECT_MAX_HZ || rawHz < 1.0)
+    {
+        std::fprintf(stderr, "CSV rate detection failed: source frequency is not 1-10000 Hz.\n");
+        return false;
+    }
+    const unsigned int hz = static_cast<unsigned int>(std::floor(rawHz + 0.5));
+    const double dt = 1.0 / static_cast<double>(hz);
+    if (std::fabs(representative - dt) > dt * 0.02 + 1e-9)
+    {
+        std::fprintf(stderr, "CSV rate detection failed: non-integer frequency.\n");
+        return false;
+    }
+    unsigned int consistent = 0, single = 0;
+    for (unsigned int i = 0; i < intervalCount; ++i)
+    {
+        const unsigned int steps = static_cast<unsigned int>(
+            std::floor(intervals[i] / dt + 0.5));
+        if (steps == 0) continue;
+        if (std::fabs(intervals[i] - steps * dt) <= dt * 0.05 + 1e-8)
+        {
+            ++consistent;
+            if (steps == 1) ++single;
+        }
+    }
+    if (consistent * 100U < intervalCount * 80U ||
+        single * 100U < intervalCount * 20U)
+    {
+        std::fprintf(stderr, "CSV rate detection failed: irregular TOW grid.\n");
+        return false;
+    }
+    result->inputHz = hz;
+    result->nominalInterval = dt;
+    result->intervalCount = intervalCount;
+    result->singleStepCount = single;
+    result->consistentCount = consistent;
+    return true;
+}
+
+static int RunCsvToInspva(const ProgramOptions *inputOptions)
+{
+    ProgramOptions options = *inputOptions;
+    FILE *inputFile = std::fopen(options.inputFileName, "rb");
+    if (inputFile == NULL)
+    {
+        std::fprintf(stderr, "Cannot open CSV input: %s\n", options.inputFileName);
+        return 1;
+    }
+    char line[LINE_BUFFER_SIZE];
+    CsvHeader header;
+    if (std::fgets(line, sizeof(line), inputFile) == NULL ||
+        !ParseCsvHeader(line, &header))
+    {
+        std::fprintf(stderr, "CSV requires the named header in its first line.\n");
+        std::fclose(inputFile);
+        return 1;
+    }
+    /* Check first data record before opening output, to avoid an empty file
+       when no --week was specified for a time-only UTC column. */
+    bool firstFound = false;
+    CsvPositionRecord first;
+    while (std::fgets(line, sizeof(line), inputFile) != NULL)
+    {
+        if (line[0] == '\r' || line[0] == '\n') continue;
+        if (!ParseCsvPositionRow(line, &header, &first))
+        {
+            std::fprintf(stderr, "Malformed first CSV row.\n");
+            std::fclose(inputFile);
+            return 3;
+        }
+        firstFound = true;
+        break;
+    }
+    if (!firstFound)
+    {
+        std::fprintf(stderr, "CSV has no data rows.\n");
+        std::fclose(inputFile);
+        return 1;
+    }
+    if (options.defaultWeek == 0 && !first.hasUtcDate)
+    {
+        std::fprintf(stderr,
+            "CSV has no GNSS week. Supply --week N, or full UTC date-time and Leap in the CSV.\n");
+        std::fclose(inputFile);
+        return 1;
+    }
+    std::rewind(inputFile);
+    if (std::fgets(line, sizeof(line), inputFile) == NULL)
+    {
+        std::fclose(inputFile); return 1;
+    }
+    RateDetectionResult rate;
+    std::memset(&rate, 0, sizeof(rate));
+    if (options.rateEnabled && options.autoDetectInputHz)
+    {
+        if (!DetectCsvInputRate(inputFile, &header, &rate))
+        {
+            std::fclose(inputFile); return 1;
+        }
+        options.inputHz = rate.inputHz;
+        if (options.outputHz > options.inputHz ||
+            options.inputHz % options.outputHz != 0)
+        {
+            std::fprintf(stderr, "CSV input is %u Hz; output %u Hz must divide it.\n",
+                         options.inputHz, options.outputHz);
+            std::fclose(inputFile); return 1;
+        }
+        options.decimationFactor = options.inputHz / options.outputHz;
+    }
+    std::rewind(inputFile);
+    if (std::fgets(line, sizeof(line), inputFile) == NULL)
+    {
+        std::fclose(inputFile); return 1;
+    }
+    FILE *outputFile = std::fopen(options.outputPrefix, "wb");
+    if (outputFile == NULL)
+    {
+        std::fprintf(stderr, "Cannot create INSPVA output: %s\n", options.outputPrefix);
+        std::fclose(inputFile); return 1;
+    }
+    unsigned long inputCount = 0, outputCount = 0, invalidCount = 0, dropped = 0;
+    unsigned int week = options.defaultWeek != 0 ? options.defaultWeek : first.utcDateWeek;
+    bool hasPrevious = false;
+    double previousTow = 0.0;
+    bool failed = false;
+    while (std::fgets(line, sizeof(line), inputFile) != NULL)
+    {
+        if (line[0] == '\r' || line[0] == '\n') continue;
+        CsvPositionRecord r;
+        if (!ParseCsvPositionRow(line, &header, &r))
+        {
+            ++invalidCount;
+            if (invalidCount <= 10)
+                std::fprintf(stderr, "Malformed CSV row near input record %lu.\n",
+                             inputCount + invalidCount + 1UL);
+            continue;
+        }
+        if (hasPrevious && r.tow - previousTow < -GNSS_WEEK_SECONDS / 2.0)
+        {
+            if (week == UINT_MAX) { failed = true; break; }
+            ++week;
+        }
+        if (r.hasUtcDate && options.defaultWeek == 0)
+            week = r.utcDateWeek;
+        previousTow = r.tow;
+        hasPrevious = true;
+        const unsigned long index = inputCount++;
+        if (index % options.decimationFactor != 0)
+        {
+            ++dropped;
+            continue;
+        }
+        char output[SENTENCE_BUFFER_SIZE];
+        if (!BuildInspvaFromCsv(&r, week, &options, output, sizeof(output)) ||
+            !WriteSentence(outputFile, output))
+        {
+            failed = true; break;
+        }
+        ++outputCount;
+    }
+    const bool closeFailed = std::fclose(outputFile) != 0;
+    std::fclose(inputFile);
+    if (failed || closeFailed)
+    {
+        std::fprintf(stderr, "CSV conversion failed while writing output.\n");
+        return 1;
+    }
+    std::printf("CSV -> INSPVA complete: %lu input records, %lu output records, "
+                "%lu rate-dropped, %lu malformed.\n",
+                inputCount, outputCount, dropped, invalidCount);
+    if (options.rateEnabled)
+        std::printf("Rate conversion: %u Hz -> %u Hz (keep every %u records)%s\n",
+                    options.inputHz, options.outputHz, options.decimationFactor,
+                    options.autoDetectInputHz ? " [auto]" : "");
+    std::printf("Output: %s\n", options.outputPrefix);
+    return invalidCount == 0 ? 0 : 3;
+}
+
 int main(int argc, char *argv[])
 {
     ProgramOptions options;
 
     if (!ParseCommandLine(argc, argv, &options))
     {
-        return argc == 2 &&
-               std::strcmp(argv[1], "--help") == 0
-                   ? 0
-                   : 1;
+        for (int i = 1; i < argc; ++i)
+        {
+            if (std::strcmp(argv[i], "--help") == 0 ||
+                std::strcmp(argv[i], "-h") == 0)
+                return 0;
+        }
+        return 1;
+    }
+
+    if (options.mode == PROGRAM_MODE_CSV_TO_INSPVA)
+    {
+        return RunCsvToInspva(&options);
     }
 
     if (options.mode ==
