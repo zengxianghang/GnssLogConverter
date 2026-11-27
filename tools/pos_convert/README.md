@@ -4,12 +4,13 @@
 
 程序采用流式读取方式处理文件，不需要把整个日志一次性加载到内存；同时支持按整数倍降频输出，并对新生成的 NMEA/NovAtel ASCII 消息重新计算校验码。
 
-> 当前版本一共支持 4 种转换模式：
+> 当前版本一共支持 5 种转换模式：
 >
 > 1. 自定义定位结果 → `GGA + INSPVA + BESTPOS`
 > 2. `INSPVA` → `BESTPOS`
 > 3. `INSPVAX` → `INSPVA`
 > 4. `INSPVAX` → `BESTPOS`
+> 5. 含 `TOW / UTC / Leap / Q / Lat / Lon / Height / Vel_e / Vel_n / Vel_u / Heading` 的 CSV/TSV → `INSPVA`
 
 ---
 
@@ -39,6 +40,7 @@ pos_convert.exe
 | 2 | NovAtel INSPVA ASCII | BESTPOS ASCII | 从组合导航结果生成位置日志 |
 | 3 | NovAtel INSPVAX ASCII | INSPVA ASCII | 将扩展 INS 日志简化为 INSPVA |
 | 4 | NovAtel INSPVAX ASCII | BESTPOS ASCII | 从 INSPVAX 中直接提取 BESTPOS 所需位置/精度信息 |
+| 5 | CSV/TSV（第一行字段名） | INSPVA ASCII | 按 TOW、经纬高、NEU 速度与 Heading 生成 NovAtel INSPVAA |
 
 所有新生成的 NovAtel ASCII 消息都会重新计算 CRC32。
 
@@ -852,6 +854,78 @@ pos_convert.exe --inspvax-to-bestpos input.log output.bestpos --sat-num 30 --rat
 
 ---
 
+# 8A. 模式 5：CSV/TSV → INSPVA
+
+## 命令格式
+
+```bat
+pos_convert.exe --csv-to-inspva input.csv output.inspva --week 2447
+```
+
+支持带表头的 **逗号分隔 CSV** 和 **Tab 分隔 TSV**，自动识别分隔符，并支持 UTF-8 BOM。列名不区分 ASCII 大小写，顺序可以不同，但所有 17 个表头必须存在，字段不能重名：
+
+```text
+TOW UTC Leap Q Lat Lon Height Pos_x Pos_y Pos_z Vel_x Vel_y Vel_z Vel_e Vel_n Vel_u Heading
+```
+
+例如以下 CSV 内容（仅演示两个历元，`UTC` 只包含日内时间）：
+
+```csv
+TOW,UTC,Leap,Q,Lat,Lon,Height,Pos_x,Pos_y,Pos_z,Vel_x,Vel_y,Vel_z,Vel_e,Vel_n,Vel_u,Heading
+99000.00,03:30:00.00,18,1,22.69049103,113.98635192,89.807,0,0,0,0,0,0,1.1,2.2,-0.3,-105.5
+99000.10,03:30:00.10,18,1,22.69049104,113.98635193,89.808,0,0,0,0,0,0,1.2,2.3,-0.3,-105.4
+```
+
+以上命令产生 `output.inspva`，其中消息格式为带 CRC32 的 `#INSPVAA,...;week,sec,lat,lon,hgt,n,e,u,roll,pitch,azimuth,status*CRC`，每条以 CRLF 结束。原始 CSV 每一条数据只生成一条 INSPVA（除非指定降频）。
+
+## 字段对应关系与单位
+
+| CSV 字段 | 目标 INSPVA 字段 | 处理方式 |
+|---|---|---|
+| `TOW` | Week 内 Seconds | **直接使用，不加 `Leap`**；假定为 GNSS/GPS 周内秒，取值 `[0, 604800)` |
+| `UTC` | 用于可选推导 Week | 完整 UTC 日期时间时可结合 `Leap` 计算 GNSS week；仅有 `HH:MM:SS` / 数值时不能推导 week |
+| `Leap` | 不直接输出 | 表示 `GNSS - UTC` 秒数；仅在 `UTC` 包含完整日期时间并需要推导周号时使用 |
+| `Q` | INS Status | 暂按旧 Position 模式：`Q > 0` → `INS_SOLUTION_GOOD`；其余 → `INS_INACTIVE` |
+| `Lat`, `Lon` | 纬度/经度 | 直接使用十进制度数 |
+| `Height` | Ellipsoidal Height | **假定为 WGS84 椭球高，单位 m**，未作大地水准面差换算 |
+| `Vel_n`, `Vel_e`, `Vel_u` | North / East / Up Velocity | 单位 m/s，按 **北、东、天** 顺序输出；不使用 ECEF 速度重复计算 |
+| `Heading` | Azimuth | 假定为从正北顺时针的角度，归一化到 `[0,360)`，例如 `-105.5` → `254.5` |
+| `Pos_x/y/z`, `Vel_x/y/z` | 无 | 不参与 INSPVA 字段计算，允许为空 |
+| CSV 缺少的 `Roll` / `Pitch` | Roll / Pitch | 默认都填 0（**占位值，并不代表实际姿态**），可通过参数修改 |
+
+**关于状态**：由于 CSV 只包含 `Q` 而非 NovAtel INS 状态机，输出 `INS_SOLUTION_GOOD` 只是格式兼容映射，不代表真正的惯导可用性。姿态同样有这个限制；`Heading` 必须本身满足 NovAtel azimuth 的定义，否则需要在源数据中修正。
+
+## GPS 周号的确定
+
+1. `--week N`：指定 CSV 第一条记录对应的 GNSS Week；跨周时如果 TOW 从约 604800 回到 0，程序自动进一周。**大多数只有时间字段的数据，请指定该选项。**
+2. 未指定 `--week`：如果 `UTC` 是形如 `2026-11-27 10:00:00`、`2026-11-27T10:00:00Z` 或 `2026/11/27 10:00:00` 的完整 **UTC 日期时间**，程序用 UTC 日期与 `Leap` 推导 GNSS Week，并核对计算出的 TOW 是否与 CSV 的 `TOW` 相差不超过 0.5 秒。
+3. 如果 `UTC` 只有 `08:50:00.00` 这样的日内时刻，或者是一个数值，则无法确定 GNSS 周，必须指定 `--week`。若缺失 Week，程序直接报错，避免生成错时间的 INSPVA。
+
+例：
+
+```bat
+:: 固定周号，10 Hz 文件无需降频
+pos_convert.exe --csv-to-inspva input.csv output.inspva --week 2447
+
+:: Tab 分隔，自动识别原始频率并转成 10 Hz
+pos_convert.exe --csv-to-inspva input.tsv output.inspva --week 2447 --rate 10
+
+:: 手动指定 100 Hz -> 10 Hz
+pos_convert.exe --csv-to-inspva input.csv output.inspva --week 2447 --rate 100 10
+
+:: 设定缺失的横滚、俯仰字段（整份文件固定）
+pos_convert.exe --csv-to-inspva input.csv output.inspva --week 2447 --roll -1.5 --pitch 2.5
+
+:: CSV 的 UTC 有完整日期，Leap 已填写：可自动计算周号
+pos_convert.exe --csv-to-inspva dated.csv output.inspva
+```
+
+CSV 行内字段缺失、数值无效或 UTC 日期与 TOW 不一致时，程序会提示 malformed；有效行仍会写出，但最终返回码为 `3`。若只有日内 UTC 且不提供 `--week`，会在创建输出文件前报错并返回 `1`。
+
+**已知限制**：暂不支持分号分隔的 CSV；使用固定 4096 字节行缓冲；只将 `Height` 视作椭球高，不自动判断 MSL 高；输入只提供 Heading 而无 Roll/Pitch；输出没有真实的 INS 状态机信息。
+
+---
+
 # 9. 降频功能
 
 四种转换模式均支持降频。
@@ -1088,7 +1162,7 @@ rewind(file)
 | `--help` | 显示帮助 |
 | `--rate OUT_HZ` | 自动识别输入频率并降频 |
 | `--rate IN_HZ OUT_HZ` | 手动指定输入/输出频率 |
-| `--sat-num N` | 写入 GGA/BESTPOS 的固定卫星数；INSPVAX→INSPVA 不使用 |
+| `--sat-num N` | 写入 GGA/BESTPOS 的固定卫星数；INSPVAX→INSPVA、CSV→INSPVA 不使用 |
 
 ## 12.2 模式 1 专用
 
@@ -1126,6 +1200,17 @@ rewind(file)
 ```
 
 `--geoid-sep` / `--pos-type` / sigma 参数在这个模式不需要，因为 INSPVAX 已包含对应信息。
+
+---
+
+## 12.6 CSV/TSV → INSPVA 专用
+
+| 参数 | 默认值 | 含义 |
+|---|---:|---|
+| `--week N` | 未设置 | CSV 首条 GNSS Week；如果 UTC 有完整日期并提供 Leap，可省略 |
+| `--roll DEG` | 0 | CSV 未提供的 Roll，占位或固定值 |
+| `--pitch DEG` | 0 | CSV 未提供的 Pitch，占位或固定值 |
+| `--rate ...` | 不降频 | 自动或手动指定整倍数降频 |
 
 ---
 
@@ -1357,7 +1442,7 @@ if errorlevel 1 ...
 
 # 16. 已知限制和设计假设
 
-1. **Position 模式的 Q 信息有限。** `Q>0` 只能被简化映射为有效解，无法自动判断 SINGLE / PSRDIFF / RTK FLOAT / RTK FIXED。
+1. **Position / CSV 模式的 Q 信息有限。** `Q>0` 只能被简化映射为有效解，无法自动判断 SINGLE / PSRDIFF / RTK FLOAT / RTK FIXED。
 2. **Position 模式的 GGA 卫星数和 HDOP 不是从源记录恢复。** 需要使用 `--sat-num`、`--hdop` 给固定值。
 3. **INSPVA→BESTPOS 无法恢复全部 BESTPOS 字段。** position type、geoid、sigma、卫星数需要人工补充。
 4. **INSPVAX→BESTPOS 的卫星数无法从 INSPVAX 得到。** `--sat-num` 只是格式兼容值。
@@ -1366,7 +1451,9 @@ if errorlevel 1 ...
 7. **INSPVA 普通读取缓冲区为 4096 字节。** 标准 INSPVA 通常远低于此长度；INSPVAX 使用动态行缓冲，不受该固定长度限制。
 8. **INSPVAX 输入 CRC 值不校验。** 这是刻意设计，用于处理源日志 CRC 错误但字段本身可用的情况。
 9. **INSPVAX 解析目前针对 `#INSPVAXA`。** 非该消息不会被当作有效 INSPVAX。
-10. **输出文件会以写模式创建。** 如果同名输出已存在，会被覆盖/截断，使用前应确认文件名。
+10. **CSV→INSPVA 模式的 Roll/Pitch 是默认零值或固定配置，不是实测姿态。** 如果需要真正姿态，应补充对应数据字段。
+11. **CSV 的 TOW 被视为 GNSS 周内秒。** 无 Week 且无法从完整 UTC 日期与 Leap 推导时需指定 `--week`。
+12. **输出文件会以写模式创建。** 如果同名输出已存在，会被覆盖/截断，使用前应确认文件名。
 
 ---
 

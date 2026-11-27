@@ -30,3 +30,15 @@ jobs:
         if: runner.os == 'Windows'
         shell: cmd
         run: build_vs2022.bat
+
+      - name: Test position converter CSV to INSPVA
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          g++ -std=c++11 -O2 -Wall -Wextra -pedantic tools/pos_convert/pos_convert.cpp -o /tmp/pos_convert
+          python3 tools/pos_convert/tests/test_csv_to_inspva.py /tmp/pos_convert
+
+      - name: Verify position converter Visual Studio build
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: tools\pos_convert\build_pos_convert.bat nopause
