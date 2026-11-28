@@ -263,6 +263,7 @@ static void PrintUsage(const char *programName)
         programName,
         programName,
         programName,
+        programName,
         programName);
 }
 
