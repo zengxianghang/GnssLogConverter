@@ -882,7 +882,7 @@ TOW,UTC,Leap,Q,Lat,Lon,Height,Pos_x,Pos_y,Pos_z,Vel_x,Vel_y,Vel_z,Vel_e,Vel_n,Ve
 
 | CSV 字段 | 目标 INSPVA 字段 | 处理方式 |
 |---|---|---|
-| `TOW` | Week 内 Seconds | **直接使用，不加 `Leap`**；假定为 GNSS/GPS 周内秒，取值 `[0, 604800)` |
+| `TOW` | Week 内 Seconds | 支持 **GNSS 周内秒或毫秒**，毫秒先除以 1000；输出始终为秒，不重复加 `Leap`，标准化后取值 `[0, 604800)` |
 | `UTC` | 用于可选推导 Week | 完整 UTC 日期时间时可结合 `Leap` 计算 GNSS week；仅有 `HH:MM:SS` / 数值时不能推导 week |
 | `Leap` | 不直接输出 | 表示 `GNSS - UTC` 秒数；仅在 `UTC` 包含完整日期时间并需要推导周号时使用 |
 | `Q` | INS Status | 暂按旧 Position 模式：`Q > 0` → `INS_SOLUTION_GOOD`；其余 → `INS_INACTIVE` |
@@ -894,6 +894,38 @@ TOW,UTC,Leap,Q,Lat,Lon,Height,Pos_x,Pos_y,Pos_z,Vel_x,Vel_y,Vel_z,Vel_e,Vel_n,Ve
 | CSV 缺少的 `Roll` / `Pitch` | Roll / Pitch | 默认都填 0（**占位值，并不代表实际姿态**），可通过参数修改 |
 
 **关于状态**：由于 CSV 只包含 `Q` 而非 NovAtel INS 状态机，输出 `INS_SOLUTION_GOOD` 只是格式兼容映射，不代表真正的惯导可用性。姿态同样有这个限制；`Heading` 必须本身满足 NovAtel azimuth 的定义，否则需要在源数据中修正。
+
+## TOW 单位：秒或毫秒
+
+CSV 模式增加 `--tow-unit auto|s|ms`，默认是 `auto`：
+
+- `auto`：根据第一条有效数据记录的原始 TOW 判断；若原始值 **≥ 604800**，按**毫秒**处理，否则按**秒**处理。这个判断针对整份文件固定一次，跨周后仍保持原单位。
+- `s`：强制 TOW 为 **秒**；兼容原先使用秒的 CSV 数据。
+- `ms`：强制 TOW 为 **毫秒**；例如 CSV 中 `449466000.0` 转成 INSPVA 的 `449466.000` 秒。
+
+**重要**：周初的小毫秒数与秒数有歧义，例如 `100000` 既可能表示 `100000 s`，也可能表示 `100000 ms`（`100 s`）。这种文件请使用 `--tow-unit ms` 明确指定。自动识别不依赖每一条记录独立猜测，避免跨周时把周初毫秒误判成秒。
+
+例如你的数据第一条为：
+
+```csv
+TOW,UTC,Leap,Q,Lat,Lon,Height,Pos_x,Pos_y,Pos_z,Vel_x,Vel_y,Vel_z,Vel_e,Vel_n,Vel_u,Heading
+449466000.0,045048.000,18,1,40.078202345,116.2355087637,36.373,-2160422.272153146,4383697.674732344,4084656.8908907156,1,2,3,4,5,6,90
+```
+
+`449466000.0 ms` = `449466.000 s`。对这条数据，`UTC=045048.000` 表示 04:50:48，`TOW - Leap = 449448 s`，换算为当天的时间正好是 04:50:48，说明时间基准匹配。
+
+```bat
+:: 毫秒周内时自动检测（样例第一条 TOW 大于 604800）
+pos_convert.exe --csv-to-inspva input.csv output.inspva --week 2447
+
+:: 显式指定毫秒（推荐用于同一格式的批量数据）
+pos_convert.exe --csv-to-inspva input.csv output.inspva --week 2447 --tow-unit ms
+
+:: 同时降频，例如 100 Hz -> 10 Hz
+pos_convert.exe --csv-to-inspva input.csv output.inspva --week 2447 --tow-unit ms --rate 10
+```
+
+自动识别源频率和整倍数降频都使用**已经转换为秒的 TOW**，并正常处理 GPS 周边界。
 
 ## GPS 周号的确定
 
@@ -940,7 +972,7 @@ Malformed first CSV row (file line 2): UTC + Leap gives TOW 468018.000000, but C
 
 首条数据错误时，程序不会创建无效输出，返回码 `3`。中间的错误数据行会记录具体原因、跳过该行并继续处理有效记录。若只有日内 UTC 且不提供 `--week`，会在创建输出文件前报错并返回 `1`。
 
-**已知限制**：暂不支持分号分隔的 CSV；使用固定 4096 字节行缓冲；只将 `Height` 视作椭球高，不自动判断 MSL 高；输入只提供 Heading 而无 Roll/Pitch；输出没有真实的 INS 状态机信息。
+**已知限制**：TOW 单位自动识别在周初存在歧义，需要 `--tow-unit ms` 明确指定；暂不支持分号分隔的 CSV；使用固定 4096 字节行缓冲；只将 `Height` 视作椭球高，不自动判断 MSL 高；输入只提供 Heading 而无 Roll/Pitch；输出没有真实的 INS 状态机信息。
 
 ---
 
