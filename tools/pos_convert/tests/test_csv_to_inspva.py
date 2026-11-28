@@ -200,6 +200,60 @@ class CsvConversionTests(unittest.TestCase):
         self.assertIn('file line 3', proc.stderr)
         self.assertIn('Vel_n', proc.stderr)
 
+    def test_millisecond_tow_from_real_csv_style(self):
+        # Real source format: GPS TOW is milliseconds, UTC is HHMMSS.mmm.
+        rows = [make_row(449466000.0, utc='045048.000'),
+                make_row(449466100.0, utc='045048.100')]
+        p = self.write_csv(rows)
+        proc, records = self.run_converter(p, '--week', '2447')
+        self.assertIn('CSV TOW units: milliseconds [auto]', proc.stdout)
+        self.assertEqual(len(records), 2)
+        self.assertAlmostEqual(float(parse_inspva(records[0])[1][1]), 449466.0)
+        self.assertAlmostEqual(float(parse_inspva(records[1])[1][1]), 449466.1)
+
+    def test_millisecond_tow_explicit_early_week(self):
+        # 100000 ms is ambiguous in auto mode; --tow-unit ms is explicit.
+        p = self.write_csv([make_row(100000.0)])
+        proc, records = self.run_converter(p, '--week', '2447',
+                                           '--tow-unit', 'ms')
+        self.assertIn('milliseconds [explicit]', proc.stdout)
+        self.assertAlmostEqual(float(parse_inspva(records[0])[1][1]), 100.0)
+
+    def test_explicit_seconds_on_existing_csv(self):
+        p = self.write_csv([make_row(449466.0)])
+        proc, records = self.run_converter(p, '--week', '2447',
+                                           '--tow-unit', 's')
+        self.assertIn('seconds [explicit]', proc.stdout)
+        self.assertAlmostEqual(float(parse_inspva(records[0])[1][1]), 449466.0)
+
+    def test_auto_rate_detects_millisecond_tow(self):
+        rows = [make_row(449466000.0 + i * 10.0) for i in range(101)]
+        p = self.write_csv(rows)
+        proc, records = self.run_converter(p, '--week', '2447', '--rate', '10')
+        self.assertIn('100 Hz -> 10 Hz', proc.stdout)
+        self.assertEqual(len(records), 11)
+        self.assertAlmostEqual(float(parse_inspva(records[-1])[1][1]), 449467.0)
+
+    def test_tow_milliseconds_cross_week(self):
+        p = self.write_csv([make_row(604799900.0),
+                            make_row(0.0),
+                            make_row(100.0)])
+        _, records = self.run_converter(p, '--week', '2447')
+        self.assertEqual([int(parse_inspva(x)[1][0]) for x in records],
+                         [2447, 2448, 2448])
+        self.assertEqual([float(parse_inspva(x)[1][1]) for x in records],
+                         [604799.9, 0.0, 0.1])
+
+    def test_millisecond_tow_outside_week_is_rejected(self):
+        p = self.write_csv([make_row(604800100.0)])
+        proc, records = self.run_converter(p, '--week', '2447', expect=3)
+        self.assertEqual(records, [])
+        self.assertIn('TOW must be in [0,604800)', proc.stderr)
+
+    def test_invalid_tow_unit_argument_rejected(self):
+        p = self.write_csv([make_row(100.0)])
+        self.run_converter(p, '--week', '2447', '--tow-unit', 'hour', expect=1)
+
     def test_non_csv_legacy_help(self):
         for opt in ('-h', '--help'):
             proc = subprocess.run([str(EXE), opt], capture_output=True, text=True)
