@@ -176,6 +176,8 @@ struct ProgramOptions
     /* CSV has no roll/pitch columns: use explicit defaults or overrides. */
     double csvRoll;
     double csvPitch;
+    /* CSV TOW unit: 0 auto, 1 seconds, 2 milliseconds. */
+    int csvTowUnit;
 };
 
 static void PrintUsage(const char *programName)
@@ -228,7 +230,8 @@ static void PrintUsage(const char *programName)
         "                       contains full date-time and Leap is known)\n"
         "  --roll DEG           Constant roll, default 0 (CSV has no roll column)\n"
         "  --pitch DEG          Constant pitch, default 0 (CSV has no pitch column)\n"
-        "  CSV: TOW is already GNSS seconds-of-week; Leap is NOT added again.\n"
+        "  --tow-unit auto|s|ms  CSV TOW units, default auto; ms means milliseconds\n"
+        "  CSV: TOW is GNSS time (seconds or milliseconds); Leap is NOT added again.\n"
         "  UTC full date-time and Leap may be used to infer week if --week absent.\n"
         "\n"
         "INSPVAX-to-BESTPOS notes:\n"
@@ -244,8 +247,10 @@ static void PrintUsage(const char *programName)
         "  %s --inspvax-to-bestpos input.log output.bestpos --sat-num 30 --rate 10\n"
         "  %s --csv-to-inspva input.csv output.inspva --week 2447\n"
         "  %s --csv-to-inspva input.tsv output.inspva --week 2447 --rate 10\n"
+        "  %s --csv-to-inspva input.csv output.inspva --week 2447 --tow-unit ms\n"
         "  %s --csv-to-inspva input.csv output.inspva --roll 0 --pitch 0\n"
         "  %s -h\n",
+        programName,
         programName,
         programName,
         programName,
@@ -379,6 +384,7 @@ static bool ParseCommandLine(int argc,
     options->decimationFactor = 1;
     options->csvRoll = 0.0;
     options->csvPitch = 0.0;
+    options->csvTowUnit = 0;
 
     int index = 0;
 
@@ -475,6 +481,28 @@ static bool ParseCommandLine(int argc,
                 return false;
             }
 
+            index += 2;
+        }
+        else if (std::strcmp(option, "--tow-unit") == 0)
+        {
+            if (options->mode != PROGRAM_MODE_CSV_TO_INSPVA ||
+                index + 1 >= argc)
+            {
+                std::fprintf(stderr, "--tow-unit is only valid for CSV mode and requires auto, s, or ms.\n");
+                return false;
+            }
+            const char *unit = argv[index + 1];
+            if (std::strcmp(unit, "auto") == 0)
+                options->csvTowUnit = 0;
+            else if (std::strcmp(unit, "s") == 0 || std::strcmp(unit, "sec") == 0)
+                options->csvTowUnit = 1;
+            else if (std::strcmp(unit, "ms") == 0)
+                options->csvTowUnit = 2;
+            else
+            {
+                std::fprintf(stderr, "Invalid --tow-unit: choose auto, s, or ms.\n");
+                return false;
+            }
             index += 2;
         }
         else if (std::strcmp(option, "--roll") == 0 ||
@@ -4215,6 +4243,7 @@ struct CsvHeader
     char separator;
     int columnCount;
     int indices[CSV_REQUIRED_COUNT];
+    double towDivisor; /* File-wide TOW normalization: 1.0 or 1000.0. */
 };
 
 struct CsvPositionRecord
@@ -4329,6 +4358,7 @@ static bool ParseCsvHeader(char *line, CsvHeader *header)
         static_cast<unsigned char>(text[2]) == 0xBF)
         text += 3;  /* optional UTF-8 BOM */
     header->separator = std::strchr(text, '\t') != NULL ? '\t' : ',';
+    header->towDivisor = 1.0;
     char *fields[64];
     const int count = SplitCsvFields(text, header->separator, fields, 64);
     if (count <= 0)
@@ -4475,6 +4505,7 @@ static bool ParseCsvPositionRow(char *line, const CsvHeader *header,
         return CsvRowError(error, errorSize, "invalid numeric field", \
                            CSV_COLUMN_NAMES[name], fields[header->indices[name]])
     CSV_GET(CSV_TOW, record->tow);
+    record->tow /= header->towDivisor;
     CSV_GET(CSV_Q, qValue);
     CSV_GET(CSV_LAT, record->latitude);
     CSV_GET(CSV_LON, record->longitude);
@@ -4487,7 +4518,8 @@ static bool ParseCsvPositionRow(char *line, const CsvHeader *header,
 
     if (record->tow < 0.0 || record->tow >= GNSS_WEEK_SECONDS)
         return CsvRowError(error, errorSize,
-                           "TOW must be in [0,604800) seconds",
+                           "TOW must be in [0,604800) seconds after unit conversion; "
+                           "try --tow-unit ms if the CSV uses milliseconds",
                            "TOW", fields[header->indices[CSV_TOW]]);
     if (record->latitude < -90.0 || record->latitude > 90.0)
         return CsvRowError(error, errorSize, "latitude outside [-90,90]",
@@ -4660,6 +4692,8 @@ static int RunCsvToInspva(const ProgramOptions *inputOptions)
         std::fclose(inputFile);
         return 1;
     }
+    if (options.csvTowUnit == 2)
+        header.towDivisor = 1000.0;
     /* Check first data record before opening output, to avoid an empty file
        when no --week was specified for a time-only UTC column. */
     bool firstFound = false;
@@ -4669,6 +4703,21 @@ static int RunCsvToInspva(const ProgramOptions *inputOptions)
     {
         ++firstDataLineNumber;
         if (IsCsvBlankLine(line)) continue;
+        /* Determine TOW units once for the entire file, not per record:
+           a millisecond TOW becomes small near week rollover. */
+        if (options.csvTowUnit == 0)
+        {
+            char probe[LINE_BUFFER_SIZE];
+            std::strcpy(probe, line);
+            char *columns[64];
+            const int columnCount = SplitCsvFields(probe, header.separator,
+                                                   columns, 64);
+            double rawTow = 0.0;
+            if (columnCount == header.columnCount &&
+                ParseDoubleStrict(columns[header.indices[CSV_TOW]], &rawTow) &&
+                rawTow >= GNSS_WEEK_SECONDS)
+                header.towDivisor = 1000.0;
+        }
         char detail[320];
         if (!ParseCsvPositionRow(line, &header, &first, detail, sizeof(detail)))
         {
@@ -4686,6 +4735,9 @@ static int RunCsvToInspva(const ProgramOptions *inputOptions)
         std::fclose(inputFile);
         return 1;
     }
+    std::printf("CSV TOW units: %s%s\n",
+                header.towDivisor == 1000.0 ? "milliseconds" : "seconds",
+                options.csvTowUnit == 0 ? " [auto]" : " [explicit]");
     if (options.defaultWeek == 0 && !first.hasUtcDate)
     {
         std::fprintf(stderr,
