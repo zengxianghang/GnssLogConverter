@@ -4419,16 +4419,61 @@ static bool ParseUtcDateToGpsTime(const char *utcText, double leap,
     return true;
 }
 
-static bool ParseCsvPositionRow(char *line, const CsvHeader *header,
-                                CsvPositionRecord *record)
+/* Optional detailed diagnostic used by the command-line CSV reader.
+ * Other callers can leave the diagnostic arguments omitted. */
+static bool CsvRowError(char *error, size_t errorSize,
+                        const char *message, const char *column = NULL,
+                        const char *value = NULL)
 {
-    if (line == NULL || header == NULL || record == NULL) return false;
+    if (error != NULL && errorSize > 0)
+    {
+        if (column != NULL && value != NULL)
+            std::snprintf(error, errorSize, "%s: %s = '%.80s'",
+                          message, column, value);
+        else
+            std::snprintf(error, errorSize, "%s", message);
+    }
+    return false;
+}
+
+static bool IsCsvBlankLine(const char *line)
+{
+    if (line == NULL) return true;
+    while (*line == ' ' || *line == '\t' || *line == '\r' || *line == '\n')
+        ++line;
+    return *line == '\0';
+}
+
+static bool ParseCsvPositionRow(char *line, const CsvHeader *header,
+                                CsvPositionRecord *record,
+                                char *error = NULL, size_t errorSize = 0)
+{
+    if (line == NULL || header == NULL || record == NULL)
+        return CsvRowError(error, errorSize, "null CSV parser argument");
+
+    if (error != NULL && errorSize > 0) error[0] = '\0';
+
     char *fields[64];
     const int count = SplitCsvFields(line, header->separator, fields, 64);
-    if (count != header->columnCount) return false;
+    if (count < 0)
+        return CsvRowError(error, errorSize,
+                           "invalid CSV quoting or more than 64 columns");
+    if (count != header->columnCount)
+    {
+        if (error != NULL && errorSize > 0)
+            std::snprintf(error, errorSize,
+                          "column count mismatch: expected %d, got %d "
+                          "(delimiter: %s; check trailing separators and quotes)",
+                          header->columnCount, count,
+                          header->separator == '\t' ? "TAB" : "comma");
+        return false;
+    }
+
     double qValue = 0.0, leap = 0.0;
 #define CSV_GET(name, target) \
-    if (!ParseDoubleStrict(fields[header->indices[name]], &target)) return false
+    if (!ParseDoubleStrict(fields[header->indices[name]], &target)) \
+        return CsvRowError(error, errorSize, "invalid numeric field", \
+                           CSV_COLUMN_NAMES[name], fields[header->indices[name]])
     CSV_GET(CSV_TOW, record->tow);
     CSV_GET(CSV_Q, qValue);
     CSV_GET(CSV_LAT, record->latitude);
@@ -4439,35 +4484,59 @@ static bool ParseCsvPositionRow(char *line, const CsvHeader *header,
     CSV_GET(CSV_VEL_U, record->upVelocity);
     CSV_GET(CSV_HEADING, record->heading);
 #undef CSV_GET
-    if (record->tow < 0.0 || record->tow >= GNSS_WEEK_SECONDS ||
-        record->latitude < -90.0 || record->latitude > 90.0 ||
-        record->longitude < -180.0 || record->longitude > 180.0 ||
-        qValue < static_cast<double>(INT_MIN) || qValue > static_cast<double>(INT_MAX) ||
+
+    if (record->tow < 0.0 || record->tow >= GNSS_WEEK_SECONDS)
+        return CsvRowError(error, errorSize,
+                           "TOW must be in [0,604800) seconds",
+                           "TOW", fields[header->indices[CSV_TOW]]);
+    if (record->latitude < -90.0 || record->latitude > 90.0)
+        return CsvRowError(error, errorSize, "latitude outside [-90,90]",
+                           "Lat", fields[header->indices[CSV_LAT]]);
+    if (record->longitude < -180.0 || record->longitude > 180.0)
+        return CsvRowError(error, errorSize, "longitude outside [-180,180]",
+                           "Lon", fields[header->indices[CSV_LON]]);
+    if (qValue < static_cast<double>(INT_MIN) ||
+        qValue > static_cast<double>(INT_MAX) ||
         std::fabs(qValue - std::floor(qValue + 0.5)) > 1e-6)
-        return false;
+        return CsvRowError(error, errorSize, "Q must be an integer",
+                           "Q", fields[header->indices[CSV_Q]]);
     record->q = static_cast<int>(std::floor(qValue + 0.5));
-    /* ECEF position/velocity columns are optional data and are ignored. */
+
+    /* Cartesian columns are not required for INSPVA and may be empty. */
     record->hasUtcDate = false;
-    /* UTC can be a numeric or HMS field, in which case --week is required. */
     const char *utc = fields[header->indices[CSV_UTC]];
     if (std::strchr(utc, '-') != NULL || std::strchr(utc, '/') != NULL)
     {
-        if (!ParseDoubleStrict(fields[header->indices[CSV_LEAP]], &leap) ||
-            !ParseUtcDateToGpsTime(utc, leap, &record->utcDateWeek,
+        if (!ParseDoubleStrict(fields[header->indices[CSV_LEAP]], &leap))
+            return CsvRowError(error, errorSize,
+                               "Leap must be numeric for a UTC date",
+                               "Leap", fields[header->indices[CSV_LEAP]]);
+        if (!ParseUtcDateToGpsTime(utc, leap, &record->utcDateWeek,
                                    &record->utcDateTow))
-            return false;
+            return CsvRowError(error, errorSize,
+                               "invalid UTC date/time (expected YYYY-MM-DD HH:MM:SS, "
+                               "YYYY-MM-DDTHH:MM:SSZ, or YYYY/MM/DD HH:MM:SS)",
+                               "UTC", utc);
         record->hasUtcDate = true;
-        /* When UTC is a full date, TOW must agree with UTC + Leap. */
         const double err = std::fabs(record->utcDateTow - record->tow);
         if (err > 0.5 && std::fabs(err - GNSS_WEEK_SECONDS) > 0.5)
+        {
+            if (error != NULL && errorSize > 0)
+                std::snprintf(error, errorSize,
+                              "UTC + Leap gives TOW %.6f, but CSV TOW is %.6f "
+                              "(difference %.3f s). Verify whether TOW is GPS "
+                              "seconds or UTC seconds and check Leap.",
+                              record->utcDateTow, record->tow, err);
             return false;
+        }
     }
     else
     {
-        /* Leap field may be blank if --week supplies week. */
+        /* A time-of-day UTC field does not determine the GNSS week. */
         if (*fields[header->indices[CSV_LEAP]] != '\0' &&
             !ParseDoubleStrict(fields[header->indices[CSV_LEAP]], &leap))
-            return false;
+            return CsvRowError(error, errorSize, "invalid numeric Leap field",
+                               "Leap", fields[header->indices[CSV_LEAP]]);
     }
     return true;
 }
@@ -4595,12 +4664,16 @@ static int RunCsvToInspva(const ProgramOptions *inputOptions)
        when no --week was specified for a time-only UTC column. */
     bool firstFound = false;
     CsvPositionRecord first;
+    unsigned long firstDataLineNumber = 1;
     while (std::fgets(line, sizeof(line), inputFile) != NULL)
     {
-        if (line[0] == '\r' || line[0] == '\n') continue;
-        if (!ParseCsvPositionRow(line, &header, &first))
+        ++firstDataLineNumber;
+        if (IsCsvBlankLine(line)) continue;
+        char detail[320];
+        if (!ParseCsvPositionRow(line, &header, &first, detail, sizeof(detail)))
         {
-            std::fprintf(stderr, "Malformed first CSV row.\n");
+            std::fprintf(stderr, "Malformed first CSV row (file line %lu): %s\n",
+                         firstDataLineNumber, detail);
             std::fclose(inputFile);
             return 3;
         }
@@ -4659,16 +4732,19 @@ static int RunCsvToInspva(const ProgramOptions *inputOptions)
     bool hasPrevious = false;
     double previousTow = 0.0;
     bool failed = false;
+    unsigned long csvFileLineNumber = 1;
     while (std::fgets(line, sizeof(line), inputFile) != NULL)
     {
-        if (line[0] == '\r' || line[0] == '\n') continue;
+        ++csvFileLineNumber;
+        if (IsCsvBlankLine(line)) continue;
         CsvPositionRecord r;
-        if (!ParseCsvPositionRow(line, &header, &r))
+        char detail[320];
+        if (!ParseCsvPositionRow(line, &header, &r, detail, sizeof(detail)))
         {
             ++invalidCount;
             if (invalidCount <= 10)
-                std::fprintf(stderr, "Malformed CSV row near input record %lu.\n",
-                             inputCount + invalidCount + 1UL);
+                std::fprintf(stderr, "Malformed CSV row (file line %lu): %s\n",
+                             csvFileLineNumber, detail);
             continue;
         }
         if (hasPrevious && r.tow - previousTow < -GNSS_WEEK_SECONDS / 2.0)
