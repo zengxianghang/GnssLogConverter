@@ -920,7 +920,25 @@ pos_convert.exe --csv-to-inspva input.csv output.inspva --week 2447 --roll -1.5 
 pos_convert.exe --csv-to-inspva dated.csv output.inspva
 ```
 
-CSV 行内字段缺失、数值无效或 UTC 日期与 TOW 不一致时，程序会提示 malformed；有效行仍会写出，但最终返回码为 `3`。若只有日内 UTC 且不提供 `--week`，会在创建输出文件前报错并返回 `1`。
+CSV 行内字段缺失、数值无效或 UTC 日期与 TOW 不一致时，程序会提示 malformed；有效行仍会写出，但最终返回码为 `3`。
+
+### CSV 数据行报错排查
+
+当首条数据不符合格式时，会指出 **文件行号、字段名称和实际取值**，例如：
+
+```text
+Malformed first CSV row (file line 2): invalid numeric field: Lat = 'abc'
+Malformed first CSV row (file line 2): column count mismatch: expected 17, got 18 (delimiter: comma; check trailing separators and quotes)
+Malformed first CSV row (file line 2): UTC + Leap gives TOW 468018.000000, but CSV TOW is 100.000000 (difference 467918.000 s). Verify whether TOW is GPS seconds or UTC seconds and check Leap.
+```
+
+- **字段个数不一致**：检查实际分隔符、行尾多余逗号、带逗号的文本是否加了双引号；
+- **数值字段无效**：检查字段是否为空、`NaN`、含单位文字或 Excel 格式；
+- **Q must be an integer**：当前 `Q` 必须为整数；需要其他 Q 枚举映射时应明确源格式；
+- **UTC + Leap 与 TOW 不匹配**：确认 TOW 是否已经是 GPS 周内秒（不是 UTC 周内秒），`Leap` 是否对应数据采集时间；
+- **首条数据前的空白行**：新版本可自动跳过空白/仅空格行；表头依然必须在文件第一行。
+
+首条数据错误时，程序不会创建无效输出，返回码 `3`。中间的错误数据行会记录具体原因、跳过该行并继续处理有效记录。若只有日内 UTC 且不提供 `--week`，会在创建输出文件前报错并返回 `1`。
 
 **已知限制**：暂不支持分号分隔的 CSV；使用固定 4096 字节行缓冲；只将 `Height` 视作椭球高，不自动判断 MSL 高；输入只提供 Heading 而无 Roll/Pitch；输出没有真实的 INS 状态机信息。
 

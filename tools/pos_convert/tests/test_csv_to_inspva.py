@@ -157,6 +157,49 @@ class CsvConversionTests(unittest.TestCase):
         _, records = self.run_converter(p, '--week', '2362', expect=3)
         self.assertEqual(len(records), 2)
 
+    def test_first_row_reports_bad_column_value_and_line(self):
+        p = self.write_csv([make_row(100, Lat='bad-latitude')])
+        proc, records = self.run_converter(p, '--week', '2362', expect=3)
+        self.assertEqual(records, [])
+        self.assertIn('file line 2', proc.stderr)
+        self.assertIn('Lat', proc.stderr)
+        self.assertIn('bad-latitude', proc.stderr)
+
+    def test_first_row_reports_column_count_mismatch(self):
+        row = make_row(100.0)
+        p = self.write_csv([row + ['unexpected-extra-value']])
+        proc, records = self.run_converter(p, '--week', '2362', expect=3)
+        self.assertEqual(records, [])
+        self.assertIn('expected 17, got 18', proc.stderr)
+        self.assertIn('file line 2', proc.stderr)
+
+    def test_first_row_reports_utc_tow_disagreement(self):
+        p = self.write_csv([make_row(100, utc='2026-11-27 10:00:00')])
+        proc, _ = self.run_converter(p, expect=3)
+        self.assertIn('UTC + Leap gives TOW', proc.stderr)
+        self.assertIn('CSV TOW', proc.stderr)
+
+    def test_first_row_reports_invalid_q(self):
+        p = self.write_csv([make_row(100, q='3.25')])
+        proc, _ = self.run_converter(p, '--week', '2362', expect=3)
+        self.assertIn('Q must be an integer', proc.stderr)
+
+    def test_blank_lines_before_first_record(self):
+        p = self.write_csv([make_row(100.0)])
+        txt = p.read_text(encoding='utf-8')
+        header, rest = txt.split('\n', 1)
+        p.write_text(header + '\n   \t   \n' + rest, encoding='utf-8')
+        _, records = self.run_converter(p, '--week', '2362')
+        self.assertEqual(len(records), 1)
+
+    def test_later_malformed_row_reports_specific_line(self):
+        p = self.write_csv([make_row(100), make_row(100.1, Vel_n='bad'),
+                            make_row(100.2)])
+        proc, records = self.run_converter(p, '--week', '2362', expect=3)
+        self.assertEqual(len(records), 2)
+        self.assertIn('file line 3', proc.stderr)
+        self.assertIn('Vel_n', proc.stderr)
+
     def test_non_csv_legacy_help(self):
         for opt in ('-h', '--help'):
             proc = subprocess.run([str(EXE), opt], capture_output=True, text=True)
