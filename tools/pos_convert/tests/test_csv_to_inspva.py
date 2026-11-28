@@ -187,8 +187,8 @@ class CsvConversionTests(unittest.TestCase):
     def test_blank_lines_before_first_record(self):
         p = self.write_csv([make_row(100.0)])
         txt = p.read_text(encoding='utf-8')
-        header, rest = txt.split('\\n', 1)
-        p.write_text(header + '\\n   \\t   \\n' + rest, encoding='utf-8')
+        header, rest = txt.split('\n', 1)
+        p.write_text(header + '\n   \t   \n' + rest, encoding='utf-8')
         _, records = self.run_converter(p, '--week', '2362')
         self.assertEqual(len(records), 1)
 
